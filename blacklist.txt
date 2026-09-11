@@ -39,6 +39,7 @@ email.getresponse.com
 f.vimeocdn.com
 forsale.dynadot.com
 gdpr.trustarc.com
+global.stun.twilio.com
 hotjar-analytics.com
 i.vimeocdn.com
 lcab.talk-me.ru
@@ -46,6 +47,7 @@ login.vivaldi.net
 lonm.vivaldi.net
 lt.activecampaign.com
 minero-proxy.com
+mozilla.map.fastly.net
 mtalk.google.com
 ngfts.lge.com
 open.activecampaign.com
