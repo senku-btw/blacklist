@@ -7,6 +7,7 @@ ads.iheart.com
 ads.soundcloud.com
 adsserver.megaphone.fm
 aggregator.service.usercentrics.eu
+alive.github.com
 analytics.oneplus.cn
 api-hotjar.com
 api.bcovlive.io
