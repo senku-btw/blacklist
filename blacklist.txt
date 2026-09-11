@@ -61,6 +61,7 @@ privacyportal.onetrust.com
 prox.sendinblue.com
 redirector.googlevideo.com
 shrsl.com
+signaler-pa.clients6.google.com
 sponsor.ajay.app
 ssl.p.jwpcdn.com
 st-widget.s3.amazonaws.com
