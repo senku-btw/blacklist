@@ -22,6 +22,7 @@ cdn.ampproject.org
 cdn.configcat.com
 cdn.fluidplayer.com
 cdn.jwplayer.com
+clients4.google.com
 clientstream.launchdarkly.com
 cmp.usercentrics.eu
 coin-hive-proxy.com
