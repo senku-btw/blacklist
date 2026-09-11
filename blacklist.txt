@@ -52,6 +52,7 @@ minero-proxy.com
 mozilla.map.fastly.net
 mtalk.google.com
 ngfts.lge.com
+ogs.google.com
 open.activecampaign.com
 open.convertkit.com
 pagead2.googlevideo.com
