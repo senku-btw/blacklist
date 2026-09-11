@@ -29,6 +29,7 @@ coin-hive-proxy.com
 coinhive-proxy.com
 consent-pref.trustarc.com
 consentcdn.cookiebot.com
+content-autofill.googleapis.com
 cookiebot.com
 cpu.js.org
 cryptoloot.org
