@@ -56,6 +56,8 @@ pagead2.googlevideo.com
 pixel.mailchimp.com
 privacyportal.onetrust.com
 prox.sendinblue.com
+redirector.googlevideo.com
+s.youtube.com
 shrsl.com
 sponsor.ajay.app
 ssl.p.jwpcdn.com
