@@ -58,6 +58,7 @@ privacyportal.onetrust.com
 prox.sendinblue.com
 shrsl.com
 sponsor.ajay.app
+ssl.p.jwpcdn.com
 st-widget.s3.amazonaws.com
 stream.launchdarkly.com
 stun.l.google.com
