@@ -39,7 +39,6 @@ edge.api.flagsmith.com
 email-open.dripemail2.com
 email.getresponse.com
 f.vimeocdn.com
-fonts.gstatic.com
 forsale.dynadot.com
 gdpr.trustarc.com
 global.stun.twilio.com
