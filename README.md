@@ -6,13 +6,9 @@
 
 ## 🎯 What is this?
 
-`blacklist` ; a minimalists' approach to blocking—without turning your local network into a troubleshooting nightmare.
+This blacklist is a minimalist's approach to blocking—without turning your local network into a troubleshooting nightmare.
 
-Systematically maintained through automation, expect updates daily.
-
-## How to proceed?
-
-Built upon a minimalist, rigorously strict curation process methodology, every domain within this blocklist undergoes exhaustive scrutiny to ensure precision. Nevertheless, due to the inherent strictness of its minimalist design, deployment carries a minor risk of workflow disruption, making independent evaluation and **caution advised**.
+Built upon a minimalist, rigorously strict curation process methodology, every domain within this blocklist undergoes exhaustive scrutiny to ensure precision. Nevertheless, due to the inherent strictness of its minimalist design, deployment carries a minor risk of workflow disruption, **making independent evaluation and caution advised**.
 
 ---
 
