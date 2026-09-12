@@ -49,21 +49,15 @@ login.vivaldi.net
 lonm.vivaldi.net
 lt.activecampaign.com
 minero-proxy.com
-mozilla.map.fastly.net
-mtalk.google.com
 ngfts.lge.com
-ogs.google.com
 open.activecampaign.com
 open.convertkit.com
 pagead2.googlevideo.com
 pixel.mailchimp.com
 privacyportal.onetrust.com
 prox.sendinblue.com
-redirector.googlevideo.com
 shrsl.com
-signaler-pa.clients6.google.com
 sponsor.ajay.app
-ssl.p.jwpcdn.com
 st-widget.s3.amazonaws.com
 stream.launchdarkly.com
 stun.l.google.com
@@ -71,5 +65,4 @@ t.sendinblue.com
 track.mailgun.org
 tracker.snowplowanalytics.com
 vid.vidyard.com
-www.gstatic.com
 www.pgjlctmswgnwf.com
