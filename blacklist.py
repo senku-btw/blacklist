@@ -229,6 +229,20 @@ def update(filepath: Path, domains: Sequence[str]) -> bool:
         return False
 
 
+def _execute_batch_delete(
+    cursor: sqlite3.Cursor, query_template: str, items: Sequence[Any]
+) -> int:
+    """Executes chunked batch delete queries to prevent SQLite variable limits."""
+    batch_size = 900
+    deleted = 0
+    for i in range(0, len(items), batch_size):
+        batch = items[i : i + batch_size]
+        placeholders = ",".join("?" for _ in batch)
+        cursor.execute(query_template.format(placeholders=placeholders), batch)
+        deleted += cursor.rowcount
+    return deleted
+
+
 @with_spinner("Purging matching domains from gravity database...")
 def purge_domains(domains: Sequence[str], db_path: Path) -> int:
     """Deletes targeted blocklist domains from gravity.db in chunked batch queries."""
@@ -256,25 +270,16 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
             if not target_ids:
                 return 0
 
-            batch_size = 900
-            for i in range(0, len(target_ids), batch_size):
-                batch = target_ids[i : i + batch_size]
-                placeholders = ",".join("?" for _ in batch)
-                query = (
-                    f"DELETE FROM domainlist_by_group "
-                    f"WHERE domainlist_id IN ({placeholders});"
-                )
-                cursor.execute(query, batch)
-
-            for i in range(0, len(target_domains), batch_size):
-                batch = target_domains[i : i + batch_size]
-                placeholders = ",".join("?" for _ in batch)
-                query = (
-                    f"DELETE FROM domainlist WHERE type IN (1, 3) "
-                    f"AND LOWER(domain) IN ({placeholders});"
-                )
-                cursor.execute(query, batch)
-                deleted_count += cursor.rowcount
+            _execute_batch_delete(
+                cursor,
+                "DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders});",
+                target_ids,
+            )
+            deleted_count = _execute_batch_delete(
+                cursor,
+                "DELETE FROM domainlist WHERE type IN (1, 3) AND LOWER(domain) IN ({placeholders});",
+                target_domains,
+            )
 
             conn.commit()
     except sqlite3.Error:
