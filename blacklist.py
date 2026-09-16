@@ -1,41 +1,51 @@
+"""Automated Pi-hole blocklist synchronization and gravity DB purging tool."""
+
 import os
 import re
-import sys
-import time
+import shutil
 import socket
 import sqlite3
-import threading
-import logging
 import subprocess
-import shutil
-from pathlib import Path
+import sys
+import threading
+import time
 from functools import wraps
-from typing import Callable, Any, TypeVar, cast, Sequence, Set, FrozenSet, Tuple, Optional
+from pathlib import Path
+from typing import Any, Callable, FrozenSet, Optional, Sequence, Set, Tuple, TypeVar, cast
 
 # --- Configuration & Environment Defaults ---
-GRAVITY_DB_PATH = Path(os.getenv("PIHOLE_GRAVITY_DB", "/root/pihole/etc-pihole/gravity.db")).resolve()
-BLACKLIST_PATH = Path(os.getenv("PIHOLE_BLACKLIST_FILE", Path(__file__).parent / "blacklist.txt")).resolve()
+GRAVITY_DB_PATH = Path(
+    os.getenv("PIHOLE_GRAVITY_DB", "/root/pihole/etc-pihole/gravity.db")
+).resolve()
+BLACKLIST_PATH = Path(
+    os.getenv("PIHOLE_BLACKLIST_FILE", Path(__file__).parent / "blacklist.txt")
+).resolve()
 CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
 
 IS_VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
 
 # --- Logging Configuration (Disabled globally) ---
-logging.disable(logging.CRITICAL)
-logger = logging.getLogger("pihole_blacklist")
+logging_module = __import__("logging")
+logging_module.disable(logging_module.CRITICAL)
+logger = logging_module.getLogger("pihole_blacklist")
 
-F = TypeVar('F', bound=Callable[..., Any])
+F = TypeVar("F", bound=Callable[..., Any])
+
 
 # --- Terminal Spinner UI ---
 class TerminalSpinner:
+    """Terminal spinner animation for visual progress feedback."""
+
     def __init__(self, message: str = "Processing..."):
         self.message = message
-        self.spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        self.spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self.delay = 0.08
         self._running = False
         self._spinner_thread: Optional[threading.Thread] = None
         self._is_tty = sys.stdout.isatty() and IS_VERBOSE
 
     def _spin(self) -> None:
+        """Runs the loop that prints animated spinner characters to stdout."""
         i = 0
         while self._running:
             char = self.spinner_chars[i % len(self.spinner_chars)]
@@ -45,6 +55,7 @@ class TerminalSpinner:
             i += 1
 
     def start(self) -> None:
+        """Starts the spinner thread or prints fallback output for non-TTY."""
         if not IS_VERBOSE:
             return
         if not self._is_tty:
@@ -56,6 +67,7 @@ class TerminalSpinner:
         self._spinner_thread.start()
 
     def stop(self, success: bool = True) -> None:
+        """Stops the spinner thread and prints completion state."""
         if not IS_VERBOSE:
             return
         if not self._is_tty:
@@ -71,7 +83,10 @@ class TerminalSpinner:
         sys.stdout.write(f"\r  [{icon}] {self.message}\n")
         sys.stdout.flush()
 
+
 def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
+    """Decorator that wraps function execution with terminal spinner visual feedback."""
+
     def decorator(func: F) -> F:
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -87,11 +102,14 @@ def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
             except KeyboardInterrupt:
                 spinner.stop(success=False)
                 sys.exit(130)
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 spinner.stop(success=False)
                 return False
+
         return cast(F, wrapper)
+
     return decorator
+
 
 # --- System & DB Health Verification ---
 def check_system_dependencies() -> bool:
@@ -102,6 +120,7 @@ def check_system_dependencies() -> bool:
         return False
     return True
 
+
 def does_file_exist(filepath: Path) -> bool:
     """Verifies that a path exists and is a regular file."""
     try:
@@ -109,6 +128,7 @@ def does_file_exist(filepath: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except (TypeError, ValueError, OSError):
         return False
+
 
 def is_db(filepath: Path) -> bool:
     """Validates if a file is a non-corrupt SQLite3 database."""
@@ -127,6 +147,7 @@ def is_db(filepath: Path) -> bool:
         return True
     except (sqlite3.Error, OSError):
         return False
+
 
 # --- Core Task Functions ---
 @with_spinner("Parsing and validating blacklist file entries...")
@@ -160,6 +181,7 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
 
     return frozenset(cleaned_entries)
 
+
 @with_spinner("Fetching existing blocklist entries from gravity database...")
 def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
     """Retrieves unique exact block (type 1) and wildcard block (type 3) domains from gravity.db."""
@@ -181,16 +203,20 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
 
     return frozenset(db_domains)
 
+
 @with_spinner("Merging, deduplicating, and sorting domain entries...")
-def merge_domain_entries(set_a: FrozenSet[str], set_b: FrozenSet[str]) -> Tuple[str, ...]:
+def merge_domain_entries(
+    set_a: FrozenSet[str], set_b: FrozenSet[str]
+) -> Tuple[str, ...]:
     """Merges two sets of domains, deduplicates them, and sorts alphabetically."""
     return tuple(sorted(set_a.union(set_b)))
+
 
 @with_spinner("Writing updated entries to blacklist file...")
 def update(filepath: Path, domains: Sequence[str]) -> bool:
     """Atomically updates the blacklist file using a temporary file replacement."""
     path = Path(filepath).resolve()
-    temp_path = path.with_suffix('.tmp')
+    temp_path = path.with_suffix(".tmp")
 
     try:
         with temp_path.open("w", encoding="utf-8") as file:
@@ -201,6 +227,7 @@ def update(filepath: Path, domains: Sequence[str]) -> bool:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
         return False
+
 
 @with_spinner("Purging matching domains from gravity database...")
 def purge_domains(domains: Sequence[str], db_path: Path) -> int:
@@ -217,7 +244,7 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
             cursor = conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
             cursor.execute("SELECT id, domain FROM domainlist WHERE type IN (1, 3);")
-            
+
             target_ids = []
             target_domains = []
 
@@ -233,12 +260,20 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
             for i in range(0, len(target_ids), batch_size):
                 batch = target_ids[i : i + batch_size]
                 placeholders = ",".join("?" for _ in batch)
-                cursor.execute(f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders});", batch)
+                query = (
+                    f"DELETE FROM domainlist_by_group "
+                    f"WHERE domainlist_id IN ({placeholders});"
+                )
+                cursor.execute(query, batch)
 
             for i in range(0, len(target_domains), batch_size):
                 batch = target_domains[i : i + batch_size]
                 placeholders = ",".join("?" for _ in batch)
-                cursor.execute(f"DELETE FROM domainlist WHERE type IN (1, 3) AND LOWER(domain) IN ({placeholders});", batch)
+                query = (
+                    f"DELETE FROM domainlist WHERE type IN (1, 3) "
+                    f"AND LOWER(domain) IN ({placeholders});"
+                )
+                cursor.execute(query, batch)
                 deleted_count += cursor.rowcount
 
             conn.commit()
@@ -247,7 +282,10 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
 
     return deleted_count
 
-def _check_dns_socket(host: str = "127.0.0.1", port: int = 53, timeout: float = 1.0) -> bool:
+
+def _check_dns_socket(
+    host: str = "127.0.0.1", port: int = 53, timeout: float = 1.0
+) -> bool:
     """Verifies that local DNS port 53 is accepting TCP socket connections."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -255,17 +293,24 @@ def _check_dns_socket(host: str = "127.0.0.1", port: int = 53, timeout: float = 
     except (OSError, socket.timeout):
         return False
 
-def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) -> bool:
+
+def _wait_for_container_health(
+    target_container: str, max_wait_sec: int = 30
+) -> bool:
     """Polls container state until reported healthy or running with active socket connectivity."""
     start_time = time.time()
     while time.time() - start_time < max_wait_sec:
         try:
             inspect_cmd = [
-                "docker", "inspect",
-                "--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
-                target_container
+                "docker",
+                "inspect",
+                "--format",
+                "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+                target_container,
             ]
-            res = subprocess.run(inspect_cmd, capture_output=True, text=True, check=True)
+            res = subprocess.run(
+                inspect_cmd, capture_output=True, text=True, check=True
+            )
             status, health = res.stdout.strip().split("|")
 
             if status == "running" and health in ("healthy", "none"):
@@ -276,12 +321,27 @@ def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) ->
         time.sleep(1)
     return False
 
+
 @with_spinner("Reloading Pi-hole DNS engine & verifying service health...")
-def restart_pihole_container(target_container: str = CONTAINER_NAME, timeout: int = 30) -> bool:
+def restart_pihole_container(
+    target_container: str = CONTAINER_NAME, timeout: int = 30
+) -> bool:
     """Flushes FTL cache via container commands or performs container restart as fallback."""
     try:
-        res = subprocess.run(["docker", "exec", target_container, "killall", "-HUP", "pihole-FTL"], capture_output=True, text=True, timeout=10)
-        subprocess.run(["docker", "exec", target_container, "pihole", "restartdns", "reload"], capture_output=True, text=True, timeout=10)
+        res = subprocess.run(
+            ["docker", "exec", target_container, "killall", "-HUP", "pihole-FTL"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        subprocess.run(
+            ["docker", "exec", target_container, "pihole", "restartdns", "reload"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
 
         if res.returncode == 0 and _check_dns_socket():
             return True
@@ -289,14 +349,27 @@ def restart_pihole_container(target_container: str = CONTAINER_NAME, timeout: in
         pass
 
     try:
-        subprocess.run(["docker", "stop", "-t", str(timeout), target_container], capture_output=True, check=True, timeout=timeout + 5)
-        subprocess.run(["docker", "start", target_container], capture_output=True, check=True, timeout=15)
+        subprocess.run(
+            ["docker", "stop", "-t", str(timeout), target_container],
+            capture_output=True,
+            check=True,
+            timeout=timeout + 5,
+        )
+        subprocess.run(
+            ["docker", "start", target_container],
+            capture_output=True,
+            check=True,
+            timeout=15,
+        )
         return _wait_for_container_health(target_container, max_wait_sec=timeout)
     except (subprocess.SubprocessError, OSError):
         return False
 
+
 @with_spinner("Verifying blacklist file count and gravity database state...")
-def verify_updates(filepath: Path, expected_domains: Sequence[str], db_path: Path) -> bool:
+def verify_updates(
+    filepath: Path, expected_domains: Sequence[str], db_path: Path
+) -> bool:
     """Validates line counts and confirms target entries were successfully purged from database."""
     file_path = Path(filepath).resolve()
     db_file = Path(db_path).resolve()
@@ -319,7 +392,10 @@ def verify_updates(filepath: Path, expected_domains: Sequence[str], db_path: Pat
             for i in range(0, len(expected_domains), batch_size):
                 batch = expected_domains[i : i + batch_size]
                 placeholders = ",".join("?" for _ in batch)
-                query = f"SELECT COUNT(*) FROM domainlist WHERE type = 1 AND LOWER(domain) IN ({placeholders});"
+                query = (
+                    f"SELECT COUNT(*) FROM domainlist "
+                    f"WHERE type = 1 AND LOWER(domain) IN ({placeholders});"
+                )
                 cursor.execute(query, batch)
                 exact_match_count += cursor.fetchone()[0]
     except sqlite3.Error:
@@ -330,8 +406,11 @@ def verify_updates(filepath: Path, expected_domains: Sequence[str], db_path: Pat
 
     return True
 
+
 @with_spinner("Staging, committing, and pushing blacklist to GitHub...")
-def push_to_github(filepath: Path, commit_msg: str = "Automated update of blacklist.txt") -> bool:
+def push_to_github(
+    filepath: Path, commit_msg: str = "Automated update of blacklist.txt"
+) -> bool:
     """Commissions changes to Git repository if modifications are detected."""
     path = Path(filepath).resolve()
     repo_dir = path.parent
@@ -342,37 +421,64 @@ def push_to_github(filepath: Path, commit_msg: str = "Automated update of blackl
             cwd=repo_dir,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
 
         if not status.stdout.strip():
             return True
 
-        subprocess.run(["git", "add", path.name], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "push"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", path.name],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "push"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
 
         return True
     except subprocess.CalledProcessError:
         return False
 
+
 @with_spinner("Verifying gravity database existence...")
 def check_gravity_db() -> bool:
+    """Checks if gravity database exists."""
     return does_file_exist(GRAVITY_DB_PATH)
+
 
 @with_spinner("Verifying blacklist file existence...")
 def check_blacklist_file() -> bool:
+    """Checks if blacklist file exists."""
     return does_file_exist(BLACKLIST_PATH)
+
 
 @with_spinner("Verifying gravity database structure...")
 def check_gravity_db_integrity() -> bool:
+    """Checks if gravity database is valid."""
     return is_db(GRAVITY_DB_PATH)
 
+
 def main() -> None:
+    """Main execution pipeline."""
     if not check_system_dependencies():
         sys.exit(1)
 
-    if not (check_gravity_db() and check_blacklist_file() and check_gravity_db_integrity()):
+    if not (
+        check_gravity_db()
+        and check_blacklist_file()
+        and check_gravity_db_integrity()
+    ):
         sys.exit(1)
 
     file_entries = parse_blacklist(BLACKLIST_PATH)
@@ -394,9 +500,13 @@ def main() -> None:
     if purged_count == 0:
         sys.exit(0)
 
-    verification_passed = verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
-    container_restarted = restart_pihole_container(CONTAINER_NAME)
-    github_pushed = push_to_github(BLACKLIST_PATH, f"Auto-update: synchronized {len(combined_domains)} entries")
+    verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
+    restart_pihole_container(CONTAINER_NAME)
+    push_to_github(
+        BLACKLIST_PATH,
+        f"Auto-update: synchronized {len(combined_domains)} entries",
+    )
+
 
 if __name__ == "__main__":
     main()
