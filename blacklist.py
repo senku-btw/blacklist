@@ -270,15 +270,18 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
             if not target_ids:
                 return 0
 
-            _execute_batch_delete(
-                cursor,
-                "DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders});",
-                target_ids,
+            group_query = (
+                "DELETE FROM domainlist_by_group "
+                "WHERE domainlist_id IN ({placeholders});"
             )
+            domain_query = (
+                "DELETE FROM domainlist WHERE type IN (1, 3) "
+                "AND LOWER(domain) IN ({placeholders});"
+            )
+
+            _execute_batch_delete(cursor, group_query, target_ids)
             deleted_count = _execute_batch_delete(
-                cursor,
-                "DELETE FROM domainlist WHERE type IN (1, 3) AND LOWER(domain) IN ({placeholders});",
-                target_domains,
+                cursor, domain_query, target_domains
             )
 
             conn.commit()
