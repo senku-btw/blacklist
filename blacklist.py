@@ -19,12 +19,8 @@ CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
 
 IS_VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
 
-# --- Logging Configuration ---
-logging.basicConfig(
-    level=logging.INFO if IS_VERBOSE else logging.CRITICAL + 1,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+# --- Logging Configuration (Disabled globally) ---
+logging.disable(logging.CRITICAL)
 logger = logging.getLogger("pihole_blacklist")
 
 F = TypeVar('F', bound=Callable[..., Any])
@@ -52,7 +48,8 @@ class TerminalSpinner:
         if not IS_VERBOSE:
             return
         if not self._is_tty:
-            logger.info(f"{self.message} (Started)")
+            sys.stdout.write(f"{self.message} (Started)\n")
+            sys.stdout.flush()
             return
         self._running = True
         self._spinner_thread = threading.Thread(target=self._spin, daemon=True)
@@ -63,7 +60,8 @@ class TerminalSpinner:
             return
         if not self._is_tty:
             status = "Completed" if success else "Failed"
-            logger.info(f"{self.message} ({status})")
+            sys.stdout.write(f"{self.message} ({status})\n")
+            sys.stdout.flush()
             return
         self._running = False
         if self._spinner_thread and self._spinner_thread.is_alive():
@@ -89,9 +87,8 @@ def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
             except KeyboardInterrupt:
                 spinner.stop(success=False)
                 sys.exit(130)
-            except Exception as e:
+            except Exception:
                 spinner.stop(success=False)
-                logger.exception(f"Unhandled exception in '{func.__name__}': {e}")
                 return False
         return cast(F, wrapper)
     return decorator
@@ -102,7 +99,6 @@ def check_system_dependencies() -> bool:
     required_cmds = ["docker", "git"]
     missing = [cmd for cmd in required_cmds if shutil.which(cmd) is None]
     if missing:
-        logger.error(f"Missing required system binaries: {', '.join(missing)}")
         return False
     return True
 
@@ -111,8 +107,7 @@ def does_file_exist(filepath: Path) -> bool:
     try:
         path = Path(filepath).resolve()
         return path.is_file() and path.stat().st_size > 0
-    except (TypeError, ValueError, OSError) as exc:
-        logger.debug(f"File validation failed for {filepath}: {exc}")
+    except (TypeError, ValueError, OSError):
         return False
 
 def is_db(filepath: Path) -> bool:
@@ -130,8 +125,7 @@ def is_db(filepath: Path) -> bool:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
             conn.execute("SELECT count(*) FROM sqlite_schema;")
         return True
-    except (sqlite3.Error, OSError) as exc:
-        logger.debug(f"SQLite validation failed for {filepath}: {exc}")
+    except (sqlite3.Error, OSError):
         return False
 
 # --- Core Task Functions ---
@@ -140,7 +134,6 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
     """Reads and sanitizes domain entries from the blacklist file."""
     path = Path(filepath).resolve()
     if not path.is_file():
-        logger.error(f"Blacklist file not found: {path}")
         return frozenset()
 
     cleaned_entries: Set[str] = set()
@@ -162,10 +155,7 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
 
                 if domain_re.match(cleaned_line):
                     cleaned_entries.add(cleaned_line)
-                elif cleaned_line:
-                    logger.debug(f"Filtered invalid domain entry: '{cleaned_line}'")
-    except OSError as exc:
-        logger.error(f"Error reading blacklist file {path}: {exc}")
+    except OSError:
         return frozenset()
 
     return frozenset(cleaned_entries)
@@ -186,8 +176,7 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
                     cleaned = domain.strip().lower()
                     if cleaned:
                         db_domains.add(cleaned)
-    except sqlite3.Error as exc:
-        logger.error(f"Database error reading gravity DB {path}: {exc}")
+    except sqlite3.Error:
         return frozenset()
 
     return frozenset(db_domains)
@@ -208,10 +197,9 @@ def update(filepath: Path, domains: Sequence[str]) -> bool:
             file.write("\n".join(domains) + ("\n" if domains else ""))
         temp_path.replace(path)
         return True
-    except OSError as exc:
+    except OSError:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
-        logger.error(f"Atomic update failed for {path}: {exc}")
         return False
 
 @with_spinner("Purging matching domains from gravity database...")
@@ -254,8 +242,7 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
                 deleted_count += cursor.rowcount
 
             conn.commit()
-    except sqlite3.Error as exc:
-        logger.error(f"Failed to purge domains from gravity DB: {exc}")
+    except sqlite3.Error:
         return False
 
     return deleted_count
@@ -298,15 +285,14 @@ def restart_pihole_container(target_container: str = CONTAINER_NAME, timeout: in
 
         if res.returncode == 0 and _check_dns_socket():
             return True
-    except subprocess.SubprocessError as exc:
-        logger.warning(f"Fast reload failed ({exc}). Falling back to container restart...")
+    except subprocess.SubprocessError:
+        pass
 
     try:
         subprocess.run(["docker", "stop", "-t", str(timeout), target_container], capture_output=True, check=True, timeout=timeout + 5)
         subprocess.run(["docker", "start", target_container], capture_output=True, check=True, timeout=15)
         return _wait_for_container_health(target_container, max_wait_sec=timeout)
-    except (subprocess.SubprocessError, OSError) as exc:
-        logger.error(f"Failed to restart container '{target_container}': {exc}")
+    except (subprocess.SubprocessError, OSError):
         return False
 
 @with_spinner("Verifying blacklist file count and gravity database state...")
@@ -318,12 +304,10 @@ def verify_updates(filepath: Path, expected_domains: Sequence[str], db_path: Pat
     try:
         with file_path.open("r", encoding="utf-8") as f:
             file_lines = sum(1 for line in f if line.strip())
-    except OSError as exc:
-        logger.error(f"File count verification failed: {exc}")
+    except OSError:
         return False
 
     if file_lines != len(expected_domains):
-        logger.error(f"Mismatch: expected {len(expected_domains)} lines in file, found {file_lines}.")
         return False
 
     batch_size = 900
@@ -338,12 +322,10 @@ def verify_updates(filepath: Path, expected_domains: Sequence[str], db_path: Pat
                 query = f"SELECT COUNT(*) FROM domainlist WHERE type = 1 AND LOWER(domain) IN ({placeholders});"
                 cursor.execute(query, batch)
                 exact_match_count += cursor.fetchone()[0]
-    except sqlite3.Error as exc:
-        logger.error(f"Database verification check failed: {exc}")
+    except sqlite3.Error:
         return False
 
     if exact_match_count != 0:
-        logger.error(f"Verification failed: {exact_match_count} exact block entries remain in gravity DB.")
         return False
 
     return True
@@ -364,7 +346,6 @@ def push_to_github(filepath: Path, commit_msg: str = "Automated update of blackl
         )
 
         if not status.stdout.strip():
-            logger.info("No git changes detected in blacklist.txt.")
             return True
 
         subprocess.run(["git", "add", path.name], cwd=repo_dir, check=True, capture_output=True)
@@ -372,9 +353,7 @@ def push_to_github(filepath: Path, commit_msg: str = "Automated update of blackl
         subprocess.run(["git", "push"], cwd=repo_dir, check=True, capture_output=True)
 
         return True
-    except subprocess.CalledProcessError as exc:
-        err_out = exc.stderr.strip() if exc.stderr else str(exc)
-        logger.error(f"Git operation failed: {err_out}")
+    except subprocess.CalledProcessError:
         return False
 
 @with_spinner("Verifying gravity database existence...")
@@ -394,48 +373,30 @@ def main() -> None:
         sys.exit(1)
 
     if not (check_gravity_db() and check_blacklist_file() and check_gravity_db_integrity()):
-        logger.error("Environment check failed: missing database or invalid file format.")
         sys.exit(1)
 
     file_entries = parse_blacklist(BLACKLIST_PATH)
     db_entries = load_gravity_db_entries(GRAVITY_DB_PATH)
 
     if file_entries is False or db_entries is False:
-        logger.error("Failed to parse initial datasets. Execution aborted.")
         sys.exit(1)
 
     combined_domains = merge_domain_entries(file_entries, db_entries)
 
     if not update(BLACKLIST_PATH, combined_domains):
-        logger.error("Failed to write updated blacklist file.")
         sys.exit(1)
 
     purged_count = purge_domains(combined_domains, GRAVITY_DB_PATH)
 
     if purged_count is False:
-        logger.error("Database purge operation failed.")
         sys.exit(1)
 
     if purged_count == 0:
-        if IS_VERBOSE:
-            print("\n[!] 0 matching domains found to purge. Skipping container restart.")
-            print("\nSuccessfully executed.")
         sys.exit(0)
 
     verification_passed = verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
     container_restarted = restart_pihole_container(CONTAINER_NAME)
     github_pushed = push_to_github(BLACKLIST_PATH, f"Auto-update: synchronized {len(combined_domains)} entries")
-
-    if IS_VERBOSE:
-        print(
-            f"\nPipeline execution summary:\n"
-            f" - Updated blacklist.txt: {len(combined_domains)} unique entries\n"
-            f" - Purged gravity DB entries: {purged_count}\n"
-            f" - Verification: {'Passed' if verification_passed else 'Failed'}\n"
-            f" - Container Restart ({CONTAINER_NAME}): {'Success' if container_restarted else 'Failed'}\n"
-            f" - GitHub Push: {'Success' if github_pushed else 'Failed'}\n"
-            f"\nSuccessfully executed."
-        )
 
 if __name__ == "__main__":
     main()
