@@ -33,6 +33,7 @@ cpu.js.org
 cryptoloot.org
 customeriomail.com
 dai.google.com
+edge-consumer-static.azureedge.net
 email-open.dripemail2.com
 email.getresponse.com
 email.mailgun.net
