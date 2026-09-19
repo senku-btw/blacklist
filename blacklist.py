@@ -15,10 +15,16 @@ from typing import Any, Callable, FrozenSet, Optional, Sequence, Set, Tuple, Typ
 
 # --- Configuration & Environment Defaults ---
 GRAVITY_DB_PATH = Path(
-    os.getenv("PIHOLE_GRAVITY_DB", "/root/pihole/etc-pihole/gravity.db")
+    os.getenv(
+        "PIHOLE_GRAVITY_DB",
+        "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db",
+    )
 ).resolve()
 BLACKLIST_PATH = Path(
-    os.getenv("PIHOLE_BLACKLIST_FILE", Path(__file__).parent / "blacklist.txt")
+    os.getenv(
+        "PIHOLE_BLACKLIST_FILE",
+        "/mnt/dietpi_userdata/docker/blacklist/blacklist.txt",
+    )
 ).resolve()
 CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
 
