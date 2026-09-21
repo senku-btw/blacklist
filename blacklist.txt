@@ -16,6 +16,7 @@ api.bcovlive.io
 api.flagsmith.com
 api.launchdarkly.com
 api.usercentrics.eu
+apis.google.com
 app.usercentrics.eu
 bcvp0rtal.com
 capi.connatix.com
@@ -96,6 +97,7 @@ t.sendinblue.com
 track.constantcontact.com
 track.mailgun.org
 tracker.snowplowanalytics.com
+translate.googleapis.com
 usersync.krxd.net
 vid.vidyard.com
 video-ads.twitter.com
