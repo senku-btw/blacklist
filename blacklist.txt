@@ -4,6 +4,7 @@ a.montrss.top
 abtest.ai
 ad.atdmt.com
 ad.doubleclick.net
+adf.ly
 ads-mas-us.vivobrowser.com
 ads-mas.vivobrowser.com
 ads.dailymotion.com
@@ -14,6 +15,8 @@ adsserver.megaphone.fm
 affiliatefuture.com
 aggregator.service.usercentrics.eu
 alive.github.com
+amzn.com
+amzn.to
 analytics.oneplus.cn
 anrdoezrs.net
 api-hotjar.com
@@ -27,6 +30,7 @@ app.usercentrics.eu
 avantlink.com
 bcvp0rtal.com
 bfast.com
+bit.ly
 capi.connatix.com
 cc-dt.com
 cdn-eu.configcat.com
@@ -80,6 +84,7 @@ gdpr.trustarc.com
 go.redirectingat.com
 go.skimresources.com
 go2jump.org
+goo.gl
 googleads.g.doubleclick.net
 gopjn.com
 goto-target-com.customtraffic.impactradius.com
@@ -102,6 +107,7 @@ ojrq.net
 onenetworkdirect.net
 open.activecampaign.com
 open.convertkit.com
+ow.ly
 pagead2.googlesyndication.com
 pagead2.googlevideo.com
 partners.webmasterplan.com
@@ -139,6 +145,7 @@ static.doubleclick.net
 stats.g.doubleclick.net
 stream.launchdarkly.com
 suggestqueries-clients6.youtube.com
+t.ly
 t.sendinblue.com
 tc.tradetracker.com
 tkqlhce.com
@@ -157,11 +164,13 @@ widgets.pinterest.com
 workspaceupdates.googleblog.com
 wuqbcogim.in
 www.7eer.net
+www.adf.ly
 www.affiliatefuture.com
 www.anrdoezrs.net
 www.apmebf.com
 www.avantlink.com
 www.bfast.com
+www.bit.ly
 www.cc-dt.com
 www.cj.com
 www.doubleclick.net
@@ -174,6 +183,7 @@ www.kqzyfj.com
 www.linksynergy.com
 www.ojrq.net
 www.onenetworkdirect.net
+www.ow.ly
 www.pgjlctmswgnwf.com
 www.pjatr.com
 www.pjtra.com
