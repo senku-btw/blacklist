@@ -4,8 +4,6 @@
 
 > An opinionated, personalized Pi-hole blacklist; stitched together, through the gaps others missed—without turning your local network into a troubleshooting nightmare.
 
-<br>
-
 ## 🚀 Quick Start (Add to Pi-hole)
 
 Adding this list to your Pi-hole instance takes less than 30 seconds:
