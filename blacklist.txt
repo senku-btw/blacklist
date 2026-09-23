@@ -159,6 +159,7 @@ static.doubleclick.net
 stats.g.doubleclick.net
 stream.launchdarkly.com
 suggestqueries-clients6.youtube.com
+suggestqueries.google.com
 t.ly
 t.sendinblue.com
 tawk.to
