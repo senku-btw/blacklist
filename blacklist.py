@@ -190,7 +190,7 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
 
 @with_spinner("Fetching existing blocklist entries from gravity database...")
 def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
-    """Retrieves unique exact block (type 1) and wildcard block (type 3) domains from gravity.db."""
+    """Retrieves unique exact block (type 1) domains from gravity.db."""
     path = Path(db_path).resolve()
     uri = f"file:{path.as_posix()}?mode=ro"
     db_domains: Set[str] = set()
@@ -198,7 +198,7 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
     try:
         with sqlite3.connect(uri, uri=True, timeout=20) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT domain FROM domainlist WHERE type IN (1, 3);")
+            cursor.execute("SELECT domain FROM domainlist WHERE type = 1;")
             for (domain,) in cursor.fetchall():
                 if domain:
                     cleaned = domain.strip().lower()
@@ -251,7 +251,7 @@ def _execute_batch_delete(
 
 @with_spinner("Purging matching domains from gravity database...")
 def purge_domains(domains: Sequence[str], db_path: Path) -> int:
-    """Deletes targeted blocklist domains from gravity.db in chunked batch queries."""
+    """Deletes targeted exact blocklist domains from gravity.db in chunked batch queries."""
     path = Path(db_path).resolve()
     if not path.is_file() or not domains:
         return 0
@@ -263,7 +263,7 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
         with sqlite3.connect(path, timeout=20) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
-            cursor.execute("SELECT id, domain FROM domainlist WHERE type IN (1, 3);")
+            cursor.execute("SELECT id, domain FROM domainlist WHERE type = 1;")
 
             target_ids = []
             target_domains = []
@@ -281,7 +281,7 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
                 "WHERE domainlist_id IN ({placeholders});"
             )
             domain_query = (
-                "DELETE FROM domainlist WHERE type IN (1, 3) "
+                "DELETE FROM domainlist WHERE type = 1 "
                 "AND LOWER(domain) IN ({placeholders});"
             )
 
