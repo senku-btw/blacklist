@@ -40,8 +40,11 @@ cdn.configcat.com
 cdn.fluidplayer.com
 cdn.jwplayer.com
 cdn.onetrust.com
+cdn.optimizely.com
+cdn2.optimizely.com
 cdn2red.com
 cdn3.awningearhighly.com
+cdn3.optimizely.com
 cj.com
 cj.dotomi.com
 click.em.pardot.com
@@ -66,9 +69,13 @@ cookiebot.com
 cpu.js.org
 cryptoloot.org
 customeriomail.com
+cws.conviva.com
 dai.google.com
+display.ugc.bazaarvoice.com
 doubleclick.net
 dpbolvw.net
+drift.com
+driftt.com
 dsms0mj1bbhn4.cloudfront.net
 edge-consumer-static.azureedge.net
 edge.api.flagsmith.com
@@ -93,10 +100,12 @@ hb.wpmucdn.com
 hotjar-analytics.com
 i.instagram.com
 img-s-msn-com.akamaized.net
+intercom.io
 jdoqocy.com
 kqzyfj.com
 lcab.talk-me.ru
 linksynergy.com
+livepassdl.conviva.com
 lt.activecampaign.com
 lt.pardot.com
 m.doubleclick.net
@@ -104,7 +113,9 @@ mediavisor.doubleclick.net
 minero-proxy.com
 ngfts.lge.com
 notifier.airbrake.io
+npr-news.streaming.adswizz.com
 ojrq.net
+om.cbsi.com
 onenetworkdirect.net
 open.activecampaign.com
 open.convertkit.com
@@ -112,6 +123,7 @@ ow.ly
 pagead2.googlesyndication.com
 pagead2.googlevideo.com
 partners.webmasterplan.com
+pings.conviva.com
 pixel.mailchimp.com
 pjatr.com
 pjtra.com
@@ -134,6 +146,7 @@ redirector.googlevideo.com
 redirector.skimresources.com
 s.pinimg.com
 s.youtube.com
+secure.surveymonkey.com
 securepubads.g.doubleclick.net
 sg.app.chat.global.xiaomi.net
 shareaholic.com
@@ -148,6 +161,7 @@ stream.launchdarkly.com
 suggestqueries-clients6.youtube.com
 t.ly
 t.sendinblue.com
+tawk.to
 tc.tradetracker.com
 tkqlhce.com
 track.adform.net
@@ -196,3 +210,4 @@ www.tkqlhce.com
 www.tradetracker.net
 www.wuqbcogim.in
 xviaden.com
+zee.cws.conviva.com
