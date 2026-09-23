@@ -92,6 +92,7 @@ goto.target.com
 hb.wpmucdn.com
 hotjar-analytics.com
 i.instagram.com
+img-s-msn-com.akamaized.net
 jdoqocy.com
 kqzyfj.com
 lcab.talk-me.ru
