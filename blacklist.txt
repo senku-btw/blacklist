@@ -32,6 +32,7 @@ bcvp0rtal.com
 bfast.com
 bit.ly
 capi.connatix.com
+careers.hotjar.com
 cc-dt.com
 cdn-eu.configcat.com
 cdn.abtest.ai
