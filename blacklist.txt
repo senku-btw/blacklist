@@ -4,6 +4,7 @@ a.montrss.top
 abtest.ai
 ad.atdmt.com
 ad.doubleclick.net
+adclick.g.doubleclick.net
 adf.ly
 ads-mas-us.vivobrowser.com
 ads-mas.vivobrowser.com
@@ -94,6 +95,7 @@ go.skimresources.com
 go2jump.org
 goo.gl
 googleads.g.doubleclick.net
+googleads4.g.doubleclick.net
 gopjn.com
 goto-target-com.customtraffic.impactradius.com
 goto.target.com
