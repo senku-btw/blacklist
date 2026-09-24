@@ -5,7 +5,6 @@ abtest.ai
 ad.atdmt.com
 ad.doubleclick.net
 adclick.g.doubleclick.net
-adf.ly
 ads-mas-us.vivobrowser.com
 ads-mas.vivobrowser.com
 ads.dailymotion.com
@@ -28,7 +27,6 @@ app.usercentrics.eu
 avantlink.com
 bcvp0rtal.com
 bfast.com
-bit.ly
 capi.connatix.com
 careers.hotjar.com
 cc-dt.com
@@ -90,7 +88,6 @@ gdpr.trustarc.com
 go.redirectingat.com
 go.skimresources.com
 go2jump.org
-goo.gl
 googleads.g.doubleclick.net
 googleads4.g.doubleclick.net
 gopjn.com
@@ -119,7 +116,6 @@ om.cbsi.com
 onenetworkdirect.net
 open.activecampaign.com
 open.convertkit.com
-ow.ly
 pagead.l.doubleclick.net
 pagead2.googlesyndication.com
 pagead2.googlevideo.com
@@ -177,7 +173,6 @@ widgets.pinterest.com
 workspaceupdates.googleblog.com
 wuqbcogim.in
 www.7eer.net
-www.adf.ly
 www.affiliatefuture.com
 www.anrdoezrs.net
 www.apmebf.com
@@ -195,7 +190,6 @@ www.kqzyfj.com
 www.linksynergy.com
 www.ojrq.net
 www.onenetworkdirect.net
-www.ow.ly
 www.pgjlctmswgnwf.com
 www.pjatr.com
 www.pjtra.com
