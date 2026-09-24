@@ -252,7 +252,7 @@ def _execute_batch_delete(
 
 @with_spinner("Purging matching domains from gravity database...")
 def purge_domains(domains: Sequence[str], db_path: Path) -> int:
-    """Deletes targeted exact blocklist domains from gravity.db in chunked batch queries."""
+    """Deletes exact blocklist domains from gravity.db in chunked batch queries."""
     path = Path(db_path).resolve()
     if not path.is_file() or not domains:
         return 0
@@ -426,7 +426,7 @@ def verify_updates(
 def push_to_github(
     filepath: Path, commit_msg: Optional[str] = None
 ) -> bool:
-    """Commissions changes to Git repository using a generated hexadecimal commit message if omitted."""
+    """Commits changes to Git repo using a generated hex commit message if omitted."""
     path = Path(filepath).resolve()
     repo_dir = path.parent
 
@@ -521,7 +521,7 @@ def main() -> None:
 
     verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
     restart_pihole_container(CONTAINER_NAME)
-    
+
     # Generate 8-character hex commit string (e.g. "1ba0037a")
     commit_hex = secrets.token_hex(4)
     push_to_github(
