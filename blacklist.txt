@@ -145,7 +145,6 @@ redirectingat.com
 redirector.googlevideo.com
 redirector.skimresources.com
 s.pinimg.com
-s.youtube.com
 secure.surveymonkey.com
 securepubads.g.doubleclick.net
 sg.app.chat.global.xiaomi.net
@@ -177,7 +176,6 @@ vid.vidyard.com
 video-ads.twitter.com
 widget.me-talk.ru
 widgets.pinterest.com
-windows.msn.com
 workspaceupdates.googleblog.com
 wuqbcogim.in
 www.7eer.net
