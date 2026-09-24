@@ -2,6 +2,7 @@
 
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -423,11 +424,15 @@ def verify_updates(
 
 @with_spinner("Staging, committing, and pushing blacklist to GitHub...")
 def push_to_github(
-    filepath: Path, commit_msg: str = "Automated update of blacklist.txt"
+    filepath: Path, commit_msg: Optional[str] = None
 ) -> bool:
-    """Commissions changes to Git repository if modifications are detected."""
+    """Commissions changes to Git repository using a generated hexadecimal commit message if omitted."""
     path = Path(filepath).resolve()
     repo_dir = path.parent
+
+    # Generate an 8-character hex code if no custom message is provided
+    if not commit_msg:
+        commit_msg = secrets.token_hex(4)
 
     try:
         status = subprocess.run(
@@ -516,9 +521,12 @@ def main() -> None:
 
     verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
     restart_pihole_container(CONTAINER_NAME)
+    
+    # Generate 8-character hex commit string (e.g. "1ba0037a")
+    commit_hex = secrets.token_hex(4)
     push_to_github(
         BLACKLIST_PATH,
-        f"Auto-update: synchronized {len(combined_domains)} entries",
+        commit_msg=commit_hex,
     )
 
 
