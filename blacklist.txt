@@ -97,6 +97,7 @@ googleads.g.doubleclick.net
 gopjn.com
 goto-target-com.customtraffic.impactradius.com
 goto.target.com
+greatis.com
 hb.wpmucdn.com
 hotjar-analytics.com
 i.instagram.com
@@ -121,6 +122,7 @@ onenetworkdirect.net
 open.activecampaign.com
 open.convertkit.com
 ow.ly
+pagead.l.doubleclick.net
 pagead2.googlesyndication.com
 pagead2.googlevideo.com
 partners.webmasterplan.com
