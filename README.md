@@ -1,6 +1,6 @@
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
 # blacklist
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > An opinionated, personalized Pi-hole blacklist; stitched together, through the gaps others missed—without turning your local network into a troubleshooting nightmare.
 
