@@ -16,8 +16,6 @@ adsserver.megaphone.fm
 affiliatefuture.com
 aggregator.service.usercentrics.eu
 alive.github.com
-amzn.com
-amzn.to
 analytics.oneplus.cn
 anrdoezrs.net
 api-hotjar.com
@@ -25,7 +23,6 @@ api.bcovlive.io
 api.flagsmith.com
 api.launchdarkly.com
 api.usercentrics.eu
-apis.google.com
 apmebf.com
 app.usercentrics.eu
 avantlink.com
@@ -102,7 +99,6 @@ goto.target.com
 greatis.com
 hb.wpmucdn.com
 hotjar-analytics.com
-i.instagram.com
 img-s-msn-com.akamaized.net
 intercom.io
 jdoqocy.com
@@ -132,7 +128,6 @@ pings.conviva.com
 pixel.mailchimp.com
 pjatr.com
 pjtra.com
-platform.instagram.com
 plus.google.com
 pntra.com
 pntrac.com
@@ -143,7 +138,6 @@ prox.sendinblue.com
 pubads.g.doubleclick.net
 qksrv.net
 raygun.com
-redditmedia.com
 redirect.at
 redirect.viglink.com
 redirectingat.com
@@ -164,7 +158,6 @@ stats.g.doubleclick.net
 stream.launchdarkly.com
 suggestqueries-clients6.youtube.com
 suggestqueries.google.com
-t.ly
 t.sendinblue.com
 tawk.to
 tc.tradetracker.com
@@ -190,7 +183,6 @@ www.anrdoezrs.net
 www.apmebf.com
 www.avantlink.com
 www.bfast.com
-www.bit.ly
 www.cc-dt.com
 www.cj.com
 www.doubleclick.net
