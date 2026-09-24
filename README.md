@@ -15,8 +15,3 @@ Adding this list to your Pi-hole instance takes less than 30 seconds:
    ```text
    https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklist.txt
    ```
-## How to Contribute
-
-Contributions to expand or refine this blocklist are warmly welcomed through pull requests. To maintain our high standard of precision, please ensure that every proposed domain includes a clear, verifiable justification and relevant context. 
-
-Please review our contribution guidelines before submitting your changes to help keep this curation fast, accurate, and community-driven.
