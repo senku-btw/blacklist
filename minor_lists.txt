@@ -5,7 +5,6 @@ https://blocklist.sefinek.net/generated/v1/0.0.0.0/extensions/r-a-y/AdguardApps.
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/phishing.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/reported-by-norton.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/web-attacks.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/test.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/tracking-and-telemetry/sefinek.hosts.txt
 https://raw.githubusercontent.com/FadeMind/hosts.extras/master/UncheckyAds/hosts
 https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/AmazonFireTV.txt
