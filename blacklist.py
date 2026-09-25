@@ -1,4 +1,4 @@
-"""Automated Pi-hole blocklist synchronization, minor list consolidation, and gravity DB purging tool."""
+"""Pi-hole blocklist sync, minor list consolidation, and DB purging tool."""
 
 import os
 import re
@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, FrozenSet, List, Optional, Sequence, Set, Tuple, TypeVar, cast
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple, TypeVar, cast
 
 # --- Configuration & Environment Defaults ---
 GRAVITY_DB_PATH = Path(
@@ -259,6 +259,40 @@ def update_minor_lists_file(filepath: Path, urls: Sequence[str]) -> bool:
         return False
 
 
+def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
+    """Fetches and parses a single minor list URL for valid domains."""
+    domains: Set[str] = set()
+    invisible_chars_re = re.compile(r"[\s\u200b\ufeff\u200e\u200f]+")
+    domain_re = re.compile(
+        r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    )
+    
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            content = response.read().decode("utf-8", errors="ignore")
+            for line in content.splitlines():
+                raw = line.split("#", 1)[0].strip()
+                if not raw:
+                    continue
+                    
+                if raw.startswith(("127.0.0.1", "0.0.0.0")):
+                    parts = raw.split()
+                    if len(parts) > 1:
+                        raw = parts[1]
+
+                raw = raw.replace("https://", "").replace("http://", "")
+                raw = raw.split("/")[0].split(":")[0]
+                cleaned = invisible_chars_re.sub("", raw).lower()
+
+                if domain_re.match(cleaned):
+                    domains.add(cleaned)
+    except (urllib.error.URLError, OSError, TimeoutError):
+        pass
+        
+    return domains
+
+
 @with_spinner("Pulling and parsing content from minor list URLs...")
 def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
     """Downloads content from all minor list URLs and extracts unique domain entries."""
@@ -274,35 +308,10 @@ def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
         return frozenset()
 
     extracted_domains: Set[str] = set()
-    invisible_chars_re = re.compile(r"[\s\u200b\ufeff\u200e\u200f]+")
-    domain_re = re.compile(
-        r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-    )
     headers = {"User-Agent": "Mozilla/5.0 (Pi-hole Blocklist Consolidation Tool)"}
 
     for url in urls:
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                content = response.read().decode("utf-8", errors="ignore")
-                for line in content.splitlines():
-                    raw_line = line.split("#", 1)[0].strip()
-                    if not raw_line:
-                        continue
-                    # Strip out hosts file IP prefixes if present
-                    if raw_line.startswith(("127.0.0.1", "0.0.0.0")):
-                        parts = raw_line.split()
-                        if len(parts) > 1:
-                            raw_line = parts[1]
-
-                    raw_line = raw_line.replace("https://", "").replace("http://", "")
-                    raw_line = raw_line.split("/")[0].split(":")[0]
-                    cleaned_line = invisible_chars_re.sub("", raw_line).lower()
-
-                    if domain_re.match(cleaned_line):
-                        extracted_domains.add(cleaned_line)
-        except (urllib.error.URLError, OSError, TimeoutError):
-            continue
+        extracted_domains.update(_fetch_minor_list_domains(url, headers))
 
     return frozenset(extracted_domains)
 
