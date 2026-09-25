@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 from pathlib import Path
 from typing import (
@@ -112,7 +113,7 @@ class TerminalSpinner:
 
 
 def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
-    """Decorator that wraps function execution with terminal spinner visual feedback."""
+    """Decorator that wraps function execution with visual spinner feedback."""
 
     def decorator(func: F) -> F:
         @wraps(func)
@@ -143,13 +144,11 @@ def check_system_dependencies() -> bool:
     """Verifies all required CLI dependencies are present in system PATH."""
     required_cmds = ["docker", "git"]
     missing = [cmd for cmd in required_cmds if shutil.which(cmd) is None]
-    if missing:
-        return False
-    return True
+    return not missing
 
 
 def does_file_exist(filepath: Path) -> bool:
-    """Verifies that a path exists and is a regular file."""
+    """Verifies that a path exists and is a regular non-empty file."""
     try:
         path = Path(filepath).resolve()
         return path.is_file() and path.stat().st_size > 0
@@ -187,7 +186,8 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
     cleaned_entries: Set[str] = set()
     invisible_chars_re = re.compile(r"[\s\u200b\ufeff\u200e\u200f]+")
     domain_re = re.compile(
-        r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
     )
 
     try:
@@ -211,7 +211,7 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
 
 @with_spinner("Identifying minor blocklists (1-20 entries) in gravity database...")
 def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
-    """Identifies blocklists in gravity.db that contain between 1 and 20 domain entries."""
+    """Identifies blocklists in gravity.db that contain between 1 and 20 entries."""
     path = Path(db_path).resolve()
     uri = f"file:{path.as_posix()}?mode=ro"
 
@@ -276,7 +276,8 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
     domains: Set[str] = set()
     invisible_chars_re = re.compile(r"[\s\u200b\ufeff\u200e\u200f]+")
     domain_re = re.compile(
-        r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
     )
 
     try:
@@ -307,7 +308,7 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
 
 @with_spinner("Pulling and parsing content from minor list URLs...")
 def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
-    """Downloads content from all minor list URLs and extracts unique domain entries."""
+    """Downloads minor list URLs concurrently and extracts unique domain entries."""
     path = Path(filepath).resolve()
     if not path.is_file():
         return frozenset()
@@ -323,11 +324,20 @@ def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
     except OSError:
         return frozenset()
 
+    if not urls:
+        return frozenset()
+
     extracted_domains: Set[str] = set()
     headers = {"User-Agent": "Mozilla/5.0 (Pi-hole Blocklist Consolidation Tool)"}
 
-    for url in urls:
-        extracted_domains.update(_fetch_minor_list_domains(url, headers))
+    max_workers = min(10, len(urls))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_fetch_minor_list_domains, url, headers)
+            for url in urls
+        ]
+        for future in as_completed(futures):
+            extracted_domains.update(future.result())
 
     return frozenset(extracted_domains)
 
@@ -355,10 +365,8 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
 
 
 @with_spinner("Merging, deduplicating, and sorting domain entries...")
-def merge_domain_entries(
-    *domain_sets: FrozenSet[str],
-) -> Tuple[str, ...]:
-    """Merges multiple sets of domains, deduplicates them, and sorts alphabetically."""
+def merge_domain_entries(*domain_sets: FrozenSet[str]) -> Tuple[str, ...]:
+    """Merges multiple sets of domains, deduplicates, and sorts alphabetically."""
     merged: Set[str] = set()
     for domain_set in domain_sets:
         merged.update(domain_set)
@@ -398,12 +406,11 @@ def _execute_batch_delete(
 
 @with_spinner("Purging matching domains from gravity database...")
 def purge_domains(domains: Sequence[str], db_path: Path) -> int:
-    """Deletes exact blocklist domains from gravity.db in chunked batch queries."""
+    """Deletes exact blocklist domains from gravity.db in atomic batch queries."""
     path = Path(db_path).resolve()
     if not path.is_file() or not domains:
         return 0
 
-    deleted_count = 0
     domain_set = set(domains)
 
     try:
@@ -432,19 +439,20 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
                 "AND LOWER(domain) IN ({placeholders});"
             )
 
-            _execute_batch_delete(cursor, group_query, target_ids)
-            deleted_count = _execute_batch_delete(cursor, domain_query, target_domains)
+            with conn:
+                _execute_batch_delete(cursor, group_query, target_ids)
+                deleted_count = _execute_batch_delete(
+                    cursor, domain_query, target_domains
+                )
 
-            conn.commit()
+            return deleted_count
     except sqlite3.Error:
-        return False
-
-    return deleted_count
+        return 0
 
 
 @with_spinner("Deleting minor blocklists from gravity database...")
 def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
-    """Removes minor adlist records and associated domain/group references from gravity.db."""
+    """Removes minor adlists and associated group references from gravity.db."""
     path = Path(db_path).resolve()
     if not path.is_file() or not adlist_ids:
         return True
@@ -457,14 +465,16 @@ def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
             adlist_group_query = (
                 "DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});"
             )
-            gravity_query = "DELETE FROM gravity WHERE adlist_id IN ({placeholders});"
+            gravity_query = (
+                "DELETE FROM gravity WHERE adlist_id IN ({placeholders});"
+            )
             adlist_query = "DELETE FROM adlist WHERE id IN ({placeholders});"
 
-            _execute_batch_delete(cursor, adlist_group_query, adlist_ids)
-            _execute_batch_delete(cursor, gravity_query, adlist_ids)
-            _execute_batch_delete(cursor, adlist_query, adlist_ids)
+            with conn:
+                _execute_batch_delete(cursor, adlist_group_query, adlist_ids)
+                _execute_batch_delete(cursor, gravity_query, adlist_ids)
+                _execute_batch_delete(cursor, adlist_query, adlist_ids)
 
-            conn.commit()
             return True
     except sqlite3.Error:
         return False
@@ -481,8 +491,10 @@ def _check_dns_socket(
         return False
 
 
-def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) -> bool:
-    """Polls container state until reported healthy or running with active socket connectivity."""
+def _wait_for_container_health(
+    target_container: str, max_wait_sec: int = 30
+) -> bool:
+    """Polls container state until reported healthy or running with DNS connectivity."""
     start_time = time.time()
     while time.time() - start_time < max_wait_sec:
         try:
@@ -490,11 +502,12 @@ def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) ->
                 "docker",
                 "inspect",
                 "--format",
-                "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+                "{{.State.Status}}|"
+                "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
                 target_container,
             ]
             res = subprocess.run(
-                inspect_cmd, capture_output=True, text=True, check=True
+                inspect_cmd, capture_output=True, text=True, check=True, timeout=5
             )
             status, health = res.stdout.strip().split("|")
 
@@ -511,7 +524,7 @@ def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) ->
 def restart_pihole_container(
     target_container: str = CONTAINER_NAME, timeout: int = 30
 ) -> bool:
-    """Flushes FTL cache via container commands or performs container restart as fallback."""
+    """Flushes FTL cache via container commands or performs restart as fallback."""
     try:
         res = subprocess.run(
             ["docker", "exec", target_container, "killall", "-HUP", "pihole-FTL"],
@@ -555,7 +568,7 @@ def restart_pihole_container(
 def verify_updates(
     filepath: Path, expected_domains: Sequence[str], db_path: Path
 ) -> bool:
-    """Validates line counts and confirms target entries were successfully purged from database."""
+    """Validates line counts and confirms entries were purged from database."""
     file_path = Path(filepath).resolve()
     db_file = Path(db_path).resolve()
 
@@ -586,10 +599,7 @@ def verify_updates(
     except sqlite3.Error:
         return False
 
-    if exact_match_count != 0:
-        return False
-
-    return True
+    return exact_match_count == 0
 
 
 @with_spinner("Staging, committing, and pushing updates to GitHub...")
@@ -598,7 +608,6 @@ def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
     path = Path(filepath).resolve()
     repo_dir = path.parent
 
-    # Generate an 8-character hex code if no custom message is provided
     if not commit_msg:
         commit_msg = secrets.token_hex(4)
 
@@ -609,6 +618,7 @@ def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
             capture_output=True,
             text=True,
             check=True,
+            timeout=10,
         )
 
         if not status.stdout.strip():
@@ -619,22 +629,25 @@ def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
             cwd=repo_dir,
             check=True,
             capture_output=True,
+            timeout=15,
         )
         subprocess.run(
             ["git", "commit", "-m", commit_msg],
             cwd=repo_dir,
             check=True,
             capture_output=True,
+            timeout=15,
         )
         subprocess.run(
             ["git", "push"],
             cwd=repo_dir,
             check=True,
             capture_output=True,
+            timeout=30,
         )
 
         return True
-    except subprocess.CalledProcessError:
+    except subprocess.SubprocessError:
         return False
 
 
@@ -662,7 +675,9 @@ def main() -> None:
         sys.exit(1)
 
     if not (
-        check_gravity_db() and check_blacklist_file() and check_gravity_db_integrity()
+        check_gravity_db()
+        and check_blacklist_file()
+        and check_gravity_db_integrity()
     ):
         sys.exit(1)
 
@@ -680,10 +695,7 @@ def main() -> None:
     file_entries = parse_blacklist(BLACKLIST_PATH)
     db_entries = load_gravity_db_entries(GRAVITY_DB_PATH)
 
-    if file_entries is False or db_entries is False:
-        sys.exit(1)
-
-    # 5. Merge all domain sources (file, DB exact blocks, minor adlists) into a deduplicated set
+    # 5. Merge all domain sources into a deduplicated set
     combined_domains = merge_domain_entries(file_entries, db_entries, minor_domains)
 
     # 6. Write merged domains to blacklist.txt
@@ -691,9 +703,7 @@ def main() -> None:
         sys.exit(1)
 
     # 7. Delete exact block domains from domainlist table in gravity.db
-    purged_count = purge_domains(combined_domains, GRAVITY_DB_PATH)
-    if purged_count is False:
-        sys.exit(1)
+    purge_domains(combined_domains, GRAVITY_DB_PATH)
 
     # 8. Delete the minor adlists from gravity DB
     if minor_ids:
