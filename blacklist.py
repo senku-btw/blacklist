@@ -15,8 +15,17 @@ import urllib.request
 from functools import wraps
 from pathlib import Path
 from typing import (
-    Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Set,
-    Tuple, TypeVar, cast
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    TypeVar,
+    cast,
 )
 
 # --- Configuration & Environment Defaults ---
@@ -306,7 +315,11 @@ def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
     urls: List[str] = []
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as file:
-            urls = [line.strip() for line in file if line.strip() and not line.startswith("#")]
+            urls = [
+                line.strip()
+                for line in file
+                if line.strip() and not line.startswith("#")
+            ]
     except OSError:
         return frozenset()
 
@@ -420,9 +433,7 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
             )
 
             _execute_batch_delete(cursor, group_query, target_ids)
-            deleted_count = _execute_batch_delete(
-                cursor, domain_query, target_domains
-            )
+            deleted_count = _execute_batch_delete(cursor, domain_query, target_domains)
 
             conn.commit()
     except sqlite3.Error:
@@ -446,12 +457,8 @@ def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
             adlist_group_query = (
                 "DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});"
             )
-            gravity_query = (
-                "DELETE FROM gravity WHERE adlist_id IN ({placeholders});"
-            )
-            adlist_query = (
-                "DELETE FROM adlist WHERE id IN ({placeholders});"
-            )
+            gravity_query = "DELETE FROM gravity WHERE adlist_id IN ({placeholders});"
+            adlist_query = "DELETE FROM adlist WHERE id IN ({placeholders});"
 
             _execute_batch_delete(cursor, adlist_group_query, adlist_ids)
             _execute_batch_delete(cursor, gravity_query, adlist_ids)
@@ -474,9 +481,7 @@ def _check_dns_socket(
         return False
 
 
-def _wait_for_container_health(
-    target_container: str, max_wait_sec: int = 30
-) -> bool:
+def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) -> bool:
     """Polls container state until reported healthy or running with active socket connectivity."""
     start_time = time.time()
     while time.time() - start_time < max_wait_sec:
@@ -588,9 +593,7 @@ def verify_updates(
 
 
 @with_spinner("Staging, committing, and pushing updates to GitHub...")
-def push_to_github(
-    filepath: Path, commit_msg: Optional[str] = None
-) -> bool:
+def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
     """Commits changes to Git repo using a generated hex commit message if omitted."""
     path = Path(filepath).resolve()
     repo_dir = path.parent
@@ -659,9 +662,7 @@ def main() -> None:
         sys.exit(1)
 
     if not (
-        check_gravity_db()
-        and check_blacklist_file()
-        and check_gravity_db_integrity()
+        check_gravity_db() and check_blacklist_file() and check_gravity_db_integrity()
     ):
         sys.exit(1)
 
