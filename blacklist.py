@@ -1,4 +1,4 @@
-"""Automated Pi-hole blocklist synchronization and gravity DB purging tool."""
+"""Automated Pi-hole blocklist synchronization, minor list consolidation, and gravity DB purging tool."""
 
 import os
 import re
@@ -10,9 +10,11 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, FrozenSet, Optional, Sequence, Set, Tuple, TypeVar, cast
+from typing import Any, Callable, FrozenSet, List, Optional, Sequence, Set, Tuple, TypeVar, cast
 
 # --- Configuration & Environment Defaults ---
 GRAVITY_DB_PATH = Path(
@@ -25,6 +27,12 @@ BLACKLIST_PATH = Path(
     os.getenv(
         "PIHOLE_BLACKLIST_FILE",
         "/mnt/dietpi_userdata/docker/blacklist/blacklist.txt",
+    )
+).resolve()
+MINOR_LISTS_PATH = Path(
+    os.getenv(
+        "PIHOLE_MINOR_LISTS_FILE",
+        "/mnt/dietpi_userdata/docker/blacklist/minor_lists.txt",
     )
 ).resolve()
 CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
@@ -189,6 +197,116 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
     return frozenset(cleaned_entries)
 
 
+@with_spinner("Identifying minor blocklists (1-20 entries) in gravity database...")
+def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
+    """Identifies blocklists in gravity.db that contain between 1 and 20 domain entries."""
+    path = Path(db_path).resolve()
+    uri = f"file:{path.as_posix()}?mode=ro"
+
+    minor_ids: List[int] = []
+    minor_urls: List[str] = []
+
+    try:
+        with sqlite3.connect(uri, uri=True, timeout=20) as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT a.id, a.address 
+                FROM adlist a 
+                JOIN gravity g ON a.id = g.adlist_id 
+                GROUP BY a.id, a.address 
+                HAVING COUNT(g.domain) >= 1 AND COUNT(g.domain) <= 20;
+            """
+            cursor.execute(query)
+            for adlist_id, address in cursor.fetchall():
+                if address:
+                    minor_ids.append(adlist_id)
+                    minor_urls.append(address.strip())
+    except sqlite3.Error:
+        pass
+
+    return minor_ids, minor_urls
+
+
+@with_spinner("Storing origin URLs of minor lists to file...")
+def update_minor_lists_file(filepath: Path, urls: Sequence[str]) -> bool:
+    """Saves and deduplicates origin URLs to the designated minor lists file."""
+    path = Path(filepath).resolve()
+    existing_urls: Set[str] = set()
+
+    if path.is_file():
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as file:
+                for line in file:
+                    cleaned = line.strip()
+                    if cleaned and not cleaned.startswith("#"):
+                        existing_urls.add(cleaned)
+        except OSError:
+            pass
+
+    existing_urls.update(u for u in urls if u)
+    sorted_urls = sorted(existing_urls)
+
+    temp_path = path.with_suffix(".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with temp_path.open("w", encoding="utf-8") as file:
+            file.write("\n".join(sorted_urls) + ("\n" if sorted_urls else ""))
+        temp_path.replace(path)
+        return True
+    except OSError:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        return False
+
+
+@with_spinner("Pulling and parsing content from minor list URLs...")
+def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
+    """Downloads content from all minor list URLs and extracts unique domain entries."""
+    path = Path(filepath).resolve()
+    if not path.is_file():
+        return frozenset()
+
+    urls: List[str] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as file:
+            urls = [line.strip() for line in file if line.strip() and not line.startswith("#")]
+    except OSError:
+        return frozenset()
+
+    extracted_domains: Set[str] = set()
+    invisible_chars_re = re.compile(r"[\s\u200b\ufeff\u200e\u200f]+")
+    domain_re = re.compile(
+        r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    )
+    headers = {"User-Agent": "Mozilla/5.0 (Pi-hole Blocklist Consolidation Tool)"}
+
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content = response.read().decode("utf-8", errors="ignore")
+                for line in content.splitlines():
+                    raw_line = line.split("#", 1)[0].strip()
+                    if not raw_line:
+                        continue
+                    # Strip out hosts file IP prefixes if present
+                    if raw_line.startswith(("127.0.0.1", "0.0.0.0")):
+                        parts = raw_line.split()
+                        if len(parts) > 1:
+                            raw_line = parts[1]
+
+                    raw_line = raw_line.replace("https://", "").replace("http://", "")
+                    raw_line = raw_line.split("/")[0].split(":")[0]
+                    cleaned_line = invisible_chars_re.sub("", raw_line).lower()
+
+                    if domain_re.match(cleaned_line):
+                        extracted_domains.add(cleaned_line)
+        except (urllib.error.URLError, OSError, TimeoutError):
+            continue
+
+    return frozenset(extracted_domains)
+
+
 @with_spinner("Fetching existing blocklist entries from gravity database...")
 def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
     """Retrieves unique exact block (type 1) domains from gravity.db."""
@@ -213,10 +331,13 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
 
 @with_spinner("Merging, deduplicating, and sorting domain entries...")
 def merge_domain_entries(
-    set_a: FrozenSet[str], set_b: FrozenSet[str]
+    *domain_sets: FrozenSet[str],
 ) -> Tuple[str, ...]:
-    """Merges two sets of domains, deduplicates them, and sorts alphabetically."""
-    return tuple(sorted(set_a.union(set_b)))
+    """Merges multiple sets of domains, deduplicates them, and sorts alphabetically."""
+    merged: Set[str] = set()
+    for domain_set in domain_sets:
+        merged.update(domain_set)
+    return tuple(sorted(merged))
 
 
 @with_spinner("Writing updated entries to blacklist file...")
@@ -296,6 +417,38 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
         return False
 
     return deleted_count
+
+
+@with_spinner("Deleting minor blocklists from gravity database...")
+def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
+    """Removes minor adlist records and associated domain/group references from gravity.db."""
+    path = Path(db_path).resolve()
+    if not path.is_file() or not adlist_ids:
+        return True
+
+    try:
+        with sqlite3.connect(path, timeout=20) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+
+            adlist_group_query = (
+                "DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});"
+            )
+            gravity_query = (
+                "DELETE FROM gravity WHERE adlist_id IN ({placeholders});"
+            )
+            adlist_query = (
+                "DELETE FROM adlist WHERE id IN ({placeholders});"
+            )
+
+            _execute_batch_delete(cursor, adlist_group_query, adlist_ids)
+            _execute_batch_delete(cursor, gravity_query, adlist_ids)
+            _execute_batch_delete(cursor, adlist_query, adlist_ids)
+
+            conn.commit()
+            return True
+    except sqlite3.Error:
+        return False
 
 
 def _check_dns_socket(
@@ -422,7 +575,7 @@ def verify_updates(
     return True
 
 
-@with_spinner("Staging, committing, and pushing blacklist to GitHub...")
+@with_spinner("Staging, committing, and pushing updates to GitHub...")
 def push_to_github(
     filepath: Path, commit_msg: Optional[str] = None
 ) -> bool:
@@ -436,7 +589,7 @@ def push_to_github(
 
     try:
         status = subprocess.run(
-            ["git", "status", "--porcelain", path.name],
+            ["git", "status", "--porcelain"],
             cwd=repo_dir,
             capture_output=True,
             text=True,
@@ -447,7 +600,7 @@ def push_to_github(
             return True
 
         subprocess.run(
-            ["git", "add", path.name],
+            ["git", "add", "."],
             cwd=repo_dir,
             check=True,
             capture_output=True,
@@ -500,24 +653,38 @@ def main() -> None:
     ):
         sys.exit(1)
 
+    # 1. Detect minor blocklists (1–20 entries) from gravity DB
+    minor_ids, minor_urls = fetch_minor_blocklists(GRAVITY_DB_PATH)
+
+    # 2. Save/merge minor list origin URLs to minor_lists.txt
+    if minor_urls:
+        update_minor_lists_file(MINOR_LISTS_PATH, minor_urls)
+
+    # 3. Pull minor list contents from origin URLs and extract unique domains
+    minor_domains = pull_and_parse_minor_list_domains(MINOR_LISTS_PATH)
+
+    # 4. Parse existing blacklist entries and gravity DB type-1 domains
     file_entries = parse_blacklist(BLACKLIST_PATH)
     db_entries = load_gravity_db_entries(GRAVITY_DB_PATH)
 
     if file_entries is False or db_entries is False:
         sys.exit(1)
 
-    combined_domains = merge_domain_entries(file_entries, db_entries)
+    # 5. Merge all domain sources (file, DB exact blocks, minor adlists) into a deduplicated set
+    combined_domains = merge_domain_entries(file_entries, db_entries, minor_domains)
 
+    # 6. Write merged domains to blacklist.txt
     if not update(BLACKLIST_PATH, combined_domains):
         sys.exit(1)
 
+    # 7. Delete exact block domains from domainlist table in gravity.db
     purged_count = purge_domains(combined_domains, GRAVITY_DB_PATH)
-
     if purged_count is False:
         sys.exit(1)
 
-    if purged_count == 0:
-        sys.exit(0)
+    # 8. Delete the minor adlists from gravity DB
+    if minor_ids:
+        delete_minor_adlists(minor_ids, GRAVITY_DB_PATH)
 
     verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
     restart_pihole_container(CONTAINER_NAME)
