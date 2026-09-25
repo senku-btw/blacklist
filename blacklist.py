@@ -333,8 +333,7 @@ def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
     max_workers = min(10, len(urls))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(_fetch_minor_list_domains, url, headers)
-            for url in urls
+            executor.submit(_fetch_minor_list_domains, url, headers) for url in urls
         ]
         for future in as_completed(futures):
             extracted_domains.update(future.result())
@@ -465,9 +464,7 @@ def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
             adlist_group_query = (
                 "DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});"
             )
-            gravity_query = (
-                "DELETE FROM gravity WHERE adlist_id IN ({placeholders});"
-            )
+            gravity_query = "DELETE FROM gravity WHERE adlist_id IN ({placeholders});"
             adlist_query = "DELETE FROM adlist WHERE id IN ({placeholders});"
 
             with conn:
@@ -491,9 +488,7 @@ def _check_dns_socket(
         return False
 
 
-def _wait_for_container_health(
-    target_container: str, max_wait_sec: int = 30
-) -> bool:
+def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) -> bool:
     """Polls container state until reported healthy or running with DNS connectivity."""
     start_time = time.time()
     while time.time() - start_time < max_wait_sec:
@@ -675,9 +670,7 @@ def main() -> None:
         sys.exit(1)
 
     if not (
-        check_gravity_db()
-        and check_blacklist_file()
-        and check_gravity_db_integrity()
+        check_gravity_db() and check_blacklist_file() and check_gravity_db_integrity()
     ):
         sys.exit(1)
 
