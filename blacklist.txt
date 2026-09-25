@@ -863,6 +863,7 @@ c.admob.com
 c.amazon-adsystem.com
 c.betrad.com
 c.greystripe.com
+c.pki.goog
 c.w.inmobi.com
 c1.nend.net
 c1.popads.net
@@ -2688,6 +2689,7 @@ prm.europacash.com
 pro-market.net
 proclivitymedia.com
 proclivitysystems.com
+prod.rewardsplatform.microsoft.com
 projectwonderful.com
 prometheusintelligencetechnology.com
 promotion.polarisoffice.com
@@ -3559,6 +3561,7 @@ www4.smartadserver.com
 wysistat.com
 wysistat.net
 x.castanet.net
+x2.c.lencr.org
 x888x.myserver.org
 xa.net
 xad.com
@@ -3628,6 +3631,7 @@ youknowbest.com
 youtube.com
 yoyo.com
 yp.com
+yr.c.lencr.org
 ysance.com
 yt1187.net
 yuilibrary.com
