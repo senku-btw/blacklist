@@ -14,7 +14,10 @@ import urllib.error
 import urllib.request
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple, TypeVar, cast
+from typing import (
+    Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Set,
+    Tuple, TypeVar, cast
+)
 
 # --- Configuration & Environment Defaults ---
 GRAVITY_DB_PATH = Path(
@@ -266,7 +269,7 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
     domain_re = re.compile(
         r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
     )
-    
+
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -275,7 +278,7 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
                 raw = line.split("#", 1)[0].strip()
                 if not raw:
                     continue
-                    
+
                 if raw.startswith(("127.0.0.1", "0.0.0.0")):
                     parts = raw.split()
                     if len(parts) > 1:
@@ -289,7 +292,7 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
                     domains.add(cleaned)
     except (urllib.error.URLError, OSError, TimeoutError):
         pass
-        
+
     return domains
 
 
