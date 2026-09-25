@@ -222,10 +222,10 @@ def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
         with sqlite3.connect(uri, uri=True, timeout=20) as conn:
             cursor = conn.cursor()
             query = """
-                SELECT a.id, a.address 
-                FROM adlist a 
-                JOIN gravity g ON a.id = g.adlist_id 
-                GROUP BY a.id, a.address 
+                SELECT a.id, a.address
+                FROM adlist a
+                JOIN gravity g ON a.id = g.adlist_id
+                GROUP BY a.id, a.address
                 HAVING COUNT(g.domain) >= 1 AND COUNT(g.domain) <= 20;
             """
             cursor.execute(query)
