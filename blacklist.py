@@ -130,7 +130,7 @@ def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
             except KeyboardInterrupt:
                 spinner.stop(success=False)
                 sys.exit(130)
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 spinner.stop(success=False)
                 return False
 
@@ -265,6 +265,27 @@ def fetch_empty_blocklists(db_path: Path) -> List[int]:
     return empty_ids
 
 
+def _fetch_matching_adlist_ids(db_path: Path, urls: List[str]) -> List[int]:
+    """Fetches adlist IDs from the database that match the given URLs."""
+    matched_ids: List[int] = []
+    try:
+        db_file = Path(db_path).resolve()
+        with sqlite3.connect(db_file, timeout=20) as conn:
+            cursor = conn.cursor()
+            batch_size = 900
+            for i in range(0, len(urls), batch_size):
+                batch = urls[i : i + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                query = f"SELECT id FROM adlist WHERE address IN ({placeholders});"
+                cursor.execute(query, batch)
+                for (adlist_id,) in cursor.fetchall():
+                    matched_ids.append(adlist_id)
+    except sqlite3.Error:
+        pass
+
+    return matched_ids
+
+
 @with_spinner("Checking minor_lists.txt for duplicates and database matches...")
 def process_minor_lists_file(filepath: Path, db_path: Path) -> List[int]:
     """Reads minor_lists.txt, deduplicates it in place, and returns matching DB IDs to delete."""
@@ -294,27 +315,10 @@ def process_minor_lists_file(filepath: Path, db_path: Path) -> List[int]:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
 
-    matched_ids: List[int] = []
     if not sorted_urls:
-        return matched_ids
+        return []
 
-    # Fetch matches from the lists contained in the file from the database
-    try:
-        db_file = Path(db_path).resolve()
-        with sqlite3.connect(db_file, timeout=20) as conn:
-            cursor = conn.cursor()
-            batch_size = 900
-            for i in range(0, len(sorted_urls), batch_size):
-                batch = sorted_urls[i : i + batch_size]
-                placeholders = ",".join("?" for _ in batch)
-                query = f"SELECT id FROM adlist WHERE address IN ({placeholders});"
-                cursor.execute(query, batch)
-                for (adlist_id,) in cursor.fetchall():
-                    matched_ids.append(adlist_id)
-    except sqlite3.Error:
-        pass
-
-    return matched_ids
+    return _fetch_matching_adlist_ids(db_path, sorted_urls)
 
 
 @with_spinner("Storing origin URLs of minor lists to file...")
