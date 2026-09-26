@@ -648,6 +648,7 @@ api.unthem.com
 api.usercentrics.eu
 api.viglink.com
 api9.net
+apis.google.com
 apmebf.com
 apnewsregistry.com
 app-analytics.snapchat.com
@@ -1448,6 +1449,7 @@ echosearch.com
 eclkmpbn.com
 eclkmpsa.com
 ecpmrocks.com
+ecs.office.com
 ecsanalytics.com
 edge-chat.instagram.com
 edge-consumer-static.azureedge.net
@@ -3990,6 +3992,7 @@ wysistat.com
 wysistat.net
 x.castanet.net
 x.com
+x1.c.lencr.org
 x2.c.lencr.org
 x888x.myserver.org
 xa.net
@@ -4031,6 +4034,7 @@ ybrantdigital.com
 ybx.io
 yceml.net
 ydworld.com
+ye.c.lencr.org
 yellowhammermg.com
 yellowtracker.com
 yesads.com
