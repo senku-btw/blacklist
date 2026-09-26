@@ -130,7 +130,7 @@ def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
             except KeyboardInterrupt:
                 spinner.stop(success=False)
                 sys.exit(130)
-            except Exception:  # pylint: disable=broad-exception-caught
+            except Exception:
                 spinner.stop(success=False)
                 return False
 
@@ -209,9 +209,9 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
     return frozenset(cleaned_entries)
 
 
-@with_spinner("Identifying minor blocklists (1-20 entries) in gravity database...")
+@with_spinner("Identifying minor blocklists (1-100 entries) in gravity database...")
 def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
-    """Identifies blocklists in gravity.db that contain between 1 and 20 entries."""
+    """Identifies blocklists in gravity.db that contain between 1 and 100 entries."""
     path = Path(db_path).resolve()
     uri = f"file:{path.as_posix()}?mode=ro"
 
@@ -226,7 +226,7 @@ def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
                 FROM adlist a
                 JOIN gravity g ON a.id = g.adlist_id
                 GROUP BY a.id, a.address
-                HAVING COUNT(g.domain) >= 1 AND COUNT(g.domain) <= 20;
+                HAVING COUNT(g.domain) >= 1 AND COUNT(g.domain) <= 100;
             """
             cursor.execute(query)
             for adlist_id, address in cursor.fetchall():
@@ -237,6 +237,84 @@ def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
         pass
 
     return minor_ids, minor_urls
+
+
+@with_spinner("Identifying empty blocklists (0 entries) in gravity database...")
+def fetch_empty_blocklists(db_path: Path) -> List[int]:
+    """Identifies totally empty blocklists in gravity.db to be cleansed."""
+    path = Path(db_path).resolve()
+    uri = f"file:{path.as_posix()}?mode=ro"
+    empty_ids: List[int] = []
+
+    try:
+        with sqlite3.connect(uri, uri=True, timeout=20) as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT a.id
+                FROM adlist a
+                LEFT JOIN gravity g ON a.id = g.adlist_id
+                GROUP BY a.id
+                HAVING COUNT(g.domain) = 0;
+            """
+            cursor.execute(query)
+            for (adlist_id,) in cursor.fetchall():
+                empty_ids.append(adlist_id)
+    except sqlite3.Error:
+        pass
+
+    return empty_ids
+
+
+@with_spinner("Checking minor_lists.txt for duplicates and database matches...")
+def process_minor_lists_file(filepath: Path, db_path: Path) -> List[int]:
+    """Reads minor_lists.txt, deduplicates it in place, and returns matching DB IDs to delete."""
+    path = Path(filepath).resolve()
+    if not path.is_file():
+        return []
+
+    unique_urls: Set[str] = set()
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as file:
+            for line in file:
+                cleaned = line.strip()
+                if cleaned and not cleaned.startswith("#"):
+                    unique_urls.add(cleaned)
+    except OSError:
+        return []
+
+    sorted_urls = sorted(unique_urls)
+
+    # Overwrite the file to ensure no duplicate entries exist upon execution
+    temp_path = path.with_suffix(".tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as file:
+            file.write("\n".join(sorted_urls) + ("\n" if sorted_urls else ""))
+        temp_path.replace(path)
+    except OSError:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    matched_ids: List[int] = []
+    if not sorted_urls:
+        return matched_ids
+
+    # Fetch matches from the lists contained in the file from the database
+    try:
+        db_file = Path(db_path).resolve()
+        with sqlite3.connect(db_file, timeout=20) as conn:
+            cursor = conn.cursor()
+            batch_size = 900
+            for i in range(0, len(sorted_urls), batch_size):
+                batch = sorted_urls[i : i + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                query = f"SELECT id FROM adlist WHERE address IN ({placeholders});"
+                cursor.execute(query, batch)
+                for (adlist_id,) in cursor.fetchall():
+                    matched_ids.append(adlist_id)
+    except sqlite3.Error:
+        pass
+
+    return matched_ids
 
 
 @with_spinner("Storing origin URLs of minor lists to file...")
@@ -449,9 +527,9 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
         return 0
 
 
-@with_spinner("Deleting minor blocklists from gravity database...")
+@with_spinner("Deleting targeted adlists from gravity database...")
 def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
-    """Removes minor adlists and associated group references from gravity.db."""
+    """Removes minor and empty adlists and associated group references from gravity.db."""
     path = Path(db_path).resolve()
     if not path.is_file() or not adlist_ids:
         return True
@@ -674,33 +752,40 @@ def main() -> None:
     ):
         sys.exit(1)
 
-    # 1. Detect minor blocklists (1–20 entries) from gravity DB
+    # 1. Ensure minor_lists.txt is deduplicated and fetch matching DB adlist IDs to delete
+    existing_minor_ids = process_minor_lists_file(MINOR_LISTS_PATH, GRAVITY_DB_PATH)
+
+    # 2. Detect minor blocklists (1–100 entries) from gravity DB
     minor_ids, minor_urls = fetch_minor_blocklists(GRAVITY_DB_PATH)
 
-    # 2. Save/merge minor list origin URLs to minor_lists.txt
+    # 3. Detect completely empty blocklists (0 entries)
+    empty_ids = fetch_empty_blocklists(GRAVITY_DB_PATH)
+
+    # 4. Save/merge minor list origin URLs to minor_lists.txt
     if minor_urls:
         update_minor_lists_file(MINOR_LISTS_PATH, minor_urls)
 
-    # 3. Pull minor list contents from origin URLs and extract unique domains
+    # 5. Pull minor list contents from origin URLs and extract unique domains
     minor_domains = pull_and_parse_minor_list_domains(MINOR_LISTS_PATH)
 
-    # 4. Parse existing blacklist entries and gravity DB type-1 domains
+    # 6. Parse existing blacklist entries and gravity DB type-1 domains
     file_entries = parse_blacklist(BLACKLIST_PATH)
     db_entries = load_gravity_db_entries(GRAVITY_DB_PATH)
 
-    # 5. Merge all domain sources into a deduplicated set
+    # 7. Merge all domain sources into a deduplicated set
     combined_domains = merge_domain_entries(file_entries, db_entries, minor_domains)
 
-    # 6. Write merged domains to blacklist.txt
+    # 8. Write merged domains to blacklist.txt
     if not update(BLACKLIST_PATH, combined_domains):
         sys.exit(1)
 
-    # 7. Delete exact block domains from domainlist table in gravity.db
+    # 9. Delete exact block domains from domainlist table in gravity.db
     purge_domains(combined_domains, GRAVITY_DB_PATH)
 
-    # 8. Delete the minor adlists from gravity DB
-    if minor_ids:
-        delete_minor_adlists(minor_ids, GRAVITY_DB_PATH)
+    # 10. Delete the matched minor, updated minor, and empty adlists from gravity DB
+    all_adlists_to_delete = list(set(minor_ids + empty_ids + existing_minor_ids))
+    if all_adlists_to_delete:
+        delete_minor_adlists(all_adlists_to_delete, GRAVITY_DB_PATH)
 
     verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
     restart_pihole_container(CONTAINER_NAME)
