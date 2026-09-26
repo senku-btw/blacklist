@@ -1365,6 +1365,7 @@ discordmerch.com
 discordsays.com
 discordstatus.com
 discovery.olv.nintendo.net
+discovery.roaming.windows.cloud.microsoft
 disney.demdex.net
 display.ugc.bazaarvoice.com
 displaymarketplace.com
@@ -2678,6 +2679,7 @@ paceaste.xyz
 pagead.l.doubleclick.net
 pagead.l.google.com
 pagead2.googleadservices.com
+pagead2.googlesyndication.co
 pagead2.googlesyndication.com
 pagead2.googlevideo.com
 pagefair.com
@@ -3317,6 +3319,7 @@ stylelist.com
 stylemepretty.com
 sublime.xyz
 sublimemedia.net
+substrate.office.com
 successfultogether.co.uk
 suggestqueries-clients6.youtube.com
 suggestqueries.google.com
