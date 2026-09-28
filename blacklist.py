@@ -57,7 +57,7 @@ IS_VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
 logger = logging.getLogger("pihole_blacklist")
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
@@ -136,7 +136,7 @@ def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
                 spinner.stop(success=False)
                 sys.exit(130)
             except Exception as err:  # pylint: disable=broad-exception-caught
-                logger.error("Unhandled exception in %s: %s", func.__name__, err)
+                logger.error("Unhandled exception in %s: %s", func.__name__, err, exc_info=True)
                 spinner.stop(success=False)
                 return False
 
@@ -152,34 +152,46 @@ def check_system_dependencies() -> bool:
     missing = [cmd for cmd in required_cmds if shutil.which(cmd) is None]
     if missing:
         logger.error("Missing system dependencies: %s", missing)
+    else:
+        logger.debug("System dependencies check passed: %s", required_cmds)
     return not missing
 
 
 def does_file_exist(filepath: Path) -> bool:
     """Verifies that a path exists and is a regular non-empty file."""
+    assert isinstance(filepath, Path), f"Expected Path object, got {type(filepath)}"
     try:
-        path = Path(filepath).resolve()
-        return path.is_file() and path.stat().st_size > 0
-    except (TypeError, ValueError, OSError):
+        path = filepath.resolve()
+        exists = path.is_file() and path.stat().st_size > 0
+        logger.debug("File existence check for %s: %s", path, exists)
+        return exists
+    except (TypeError, ValueError, OSError) as err:
+        logger.warning("Error checking file existence for %s: %s", filepath, err)
         return False
 
 
 def is_db(filepath: Path) -> bool:
     """Validates if a file is a non-corrupt SQLite3 database."""
+    assert isinstance(filepath, Path), f"Expected Path object, got {type(filepath)}"
     try:
-        path = Path(filepath).resolve()
+        path = filepath.resolve()
         if not path.is_file() or path.stat().st_size < 512:
+            logger.warning("DB check failed: %s is not a file or too small (<512 bytes)", path)
             return False
 
         with path.open("rb") as f:
-            if f.read(16) != b"SQLite format 3\x00":
+            header = f.read(16)
+            if header != b"SQLite format 3\x00":
+                logger.warning("DB check failed: %s invalid header %r", path, header)
                 return False
 
         uri = f"file:{path.as_posix()}?mode=ro"
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
             conn.execute("SELECT count(*) FROM sqlite_schema;")
+        logger.debug("Database integrity verified for %s", path)
         return True
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError) as err:
+        logger.error("DB integrity check failed for %s: %s", filepath, err)
         return False
 
 
@@ -187,8 +199,10 @@ def is_db(filepath: Path) -> bool:
 @with_spinner("Parsing and validating blacklist file entries...")
 def parse_blacklist(filepath: Path) -> FrozenSet[str]:
     """Reads and sanitizes domain entries from the blacklist file."""
-    path = Path(filepath).resolve()
+    assert isinstance(filepath, Path), f"Expected Path object, got {type(filepath)}"
+    path = filepath.resolve()
     if not path.is_file():
+        logger.warning("Blacklist file not found at %s", path)
         return frozenset()
 
     cleaned_entries: Set[str] = set()
@@ -198,9 +212,11 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
         r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
     )
 
+    total_lines = 0
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as file:
             for line in file:
+                total_lines += 1
                 raw_line = line.split("#", 1)[0].strip()
                 if not raw_line:
                     continue
@@ -211,19 +227,24 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
 
                 if domain_re.match(cleaned_line):
                     cleaned_entries.add(cleaned_line)
+                else:
+                    logger.debug("Skipped invalid domain line %d in %s: %s", total_lines, path, raw_line)
     except OSError as err:
-        logger.error("Failed to read blacklist file: %s", err)
+        logger.error("Failed to read blacklist file %s: %s", path, err)
         return frozenset()
 
+    logger.info("Parsed %d valid domains from %d total lines in %s", len(cleaned_entries), total_lines, path)
     return frozenset(cleaned_entries)
 
 
 @with_spinner("Identifying minor blocklists (1-100 entries) in gravity database...")
 def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
     """Identifies blocklists in gravity.db that contain between 1 and 100 entries."""
-    path = Path(db_path).resolve()
-    uri = f"file:{path.as_posix()}?mode=ro"
+    assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
+    path = db_path.resolve()
+    assert path.is_file(), f"Database path does not exist: {path}"
 
+    uri = f"file:{path.as_posix()}?mode=ro"
     minor_ids: List[int] = []
     minor_urls: List[str] = []
 
@@ -239,12 +260,13 @@ def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
             """
             cursor.execute(query)
             for adlist_id, address, count in cursor.fetchall():
+                assert isinstance(adlist_id, int), f"adlist ID must be int, got {type(adlist_id)}"
                 if address:
                     minor_ids.append(adlist_id)
                     url_str = address.strip()
                     minor_urls.append(url_str)
                     logger.info(
-                        "FLAGGED MINOR LIST (1-100 entries): ID=%s | Entries=%d | URL=%s",
+                        "FLAGGED MINOR LIST (1-100 entries): ID=%s | Domain Count=%d | URL=%s",
                         adlist_id,
                         count,
                         url_str,
@@ -252,13 +274,17 @@ def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
     except sqlite3.Error as err:
         logger.error("Error querying minor blocklists: %s", err)
 
+    assert len(minor_ids) == len(minor_urls), "Mismatch between minor IDs and URLs count"
     return minor_ids, minor_urls
 
 
 @with_spinner("Identifying empty blocklists (0 entries) in gravity database...")
 def fetch_empty_blocklists(db_path: Path) -> List[int]:
     """Identifies totally empty blocklists in gravity.db to be cleansed."""
-    path = Path(db_path).resolve()
+    assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
+    path = db_path.resolve()
+    assert path.is_file(), f"Database path does not exist: {path}"
+
     uri = f"file:{path.as_posix()}?mode=ro"
     empty_ids: List[int] = []
 
@@ -274,6 +300,7 @@ def fetch_empty_blocklists(db_path: Path) -> List[int]:
             """
             cursor.execute(query)
             for adlist_id, address in cursor.fetchall():
+                assert isinstance(adlist_id, int), f"adlist ID must be int, got {type(adlist_id)}"
                 empty_ids.append(adlist_id)
                 logger.info(
                     "FLAGGED EMPTY LIST (0 entries): ID=%s | URL=%s",
@@ -288,9 +315,15 @@ def fetch_empty_blocklists(db_path: Path) -> List[int]:
 
 def _fetch_matching_adlist_ids(db_path: Path, urls: List[str]) -> List[int]:
     """Fetches adlist IDs from the database that match the given URLs."""
+    assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
+    assert isinstance(urls, list), f"Expected list for urls, got {type(urls)}"
+
     matched_ids: List[int] = []
+    if not urls:
+        return matched_ids
+
     try:
-        db_file = Path(db_path).resolve()
+        db_file = db_path.resolve()
         with sqlite3.connect(db_file, timeout=20) as conn:
             cursor = conn.cursor()
             batch_size = 900
@@ -300,6 +333,7 @@ def _fetch_matching_adlist_ids(db_path: Path, urls: List[str]) -> List[int]:
                 query = f"SELECT id, address FROM adlist WHERE address IN ({placeholders});"
                 cursor.execute(query, batch)
                 for adlist_id, address in cursor.fetchall():
+                    assert isinstance(adlist_id, int), f"ID expected int, got {type(adlist_id)}"
                     matched_ids.append(adlist_id)
                     logger.info(
                         "MATCHED MINOR_LISTS.TXT URL TO DB: ID=%s | URL=%s",
@@ -307,7 +341,7 @@ def _fetch_matching_adlist_ids(db_path: Path, urls: List[str]) -> List[int]:
                         address,
                     )
     except sqlite3.Error as err:
-        logger.error("Error matching adlist URLs: %s", err)
+        logger.error("Error matching adlist URLs in database: %s", err)
 
     return matched_ids
 
@@ -315,8 +349,12 @@ def _fetch_matching_adlist_ids(db_path: Path, urls: List[str]) -> List[int]:
 @with_spinner("Checking minor_lists.txt for duplicates and database matches...")
 def process_minor_lists_file(filepath: Path, db_path: Path) -> List[int]:
     """Reads minor_lists.txt, deduplicates it in place, and returns matching DB IDs to delete."""
-    path = Path(filepath).resolve()
+    assert isinstance(filepath, Path), f"Expected Path for filepath, got {type(filepath)}"
+    assert isinstance(db_path, Path), f"Expected Path for db_path, got {type(db_path)}"
+
+    path = filepath.resolve()
     if not path.is_file():
+        logger.debug("Minor lists file %s does not exist yet", path)
         return []
 
     unique_urls: Set[str] = set()
@@ -327,10 +365,11 @@ def process_minor_lists_file(filepath: Path, db_path: Path) -> List[int]:
                 if cleaned and not cleaned.startswith("#"):
                     unique_urls.add(cleaned)
     except OSError as err:
-        logger.error("Error reading minor_lists file: %s", err)
+        logger.error("Error reading minor_lists file %s: %s", path, err)
         return []
 
     sorted_urls = sorted(unique_urls)
+    logger.info("Loaded %d unique URLs from %s", len(sorted_urls), path)
 
     temp_path = path.with_suffix(".tmp")
     try:
@@ -351,7 +390,10 @@ def process_minor_lists_file(filepath: Path, db_path: Path) -> List[int]:
 @with_spinner("Storing origin URLs of minor lists to file...")
 def update_minor_lists_file(filepath: Path, urls: Sequence[str]) -> bool:
     """Saves and deduplicates origin URLs to the designated minor lists file."""
-    path = Path(filepath).resolve()
+    assert isinstance(filepath, Path), f"Expected Path for filepath, got {type(filepath)}"
+    assert hasattr(urls, "__iter__"), "urls must be iterable"
+
+    path = filepath.resolve()
     existing_urls: Set[str] = set()
 
     if path.is_file():
@@ -361,11 +403,15 @@ def update_minor_lists_file(filepath: Path, urls: Sequence[str]) -> bool:
                     cleaned = line.strip()
                     if cleaned and not cleaned.startswith("#"):
                         existing_urls.add(cleaned)
-        except OSError:
-            pass
+        except OSError as err:
+            logger.warning("Error reading existing minor lists from %s: %s", path, err)
 
+    before_count = len(existing_urls)
     existing_urls.update(u for u in urls if u)
+    added_count = len(existing_urls) - before_count
     sorted_urls = sorted(existing_urls)
+
+    logger.info("Adding %d new URLs to minor lists file (Total: %d)", added_count, len(sorted_urls))
 
     temp_path = path.with_suffix(".tmp")
     try:
@@ -375,7 +421,7 @@ def update_minor_lists_file(filepath: Path, urls: Sequence[str]) -> bool:
         temp_path.replace(path)
         return True
     except OSError as err:
-        logger.error("Error updating minor lists file: %s", err)
+        logger.error("Error updating minor lists file %s: %s", path, err)
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
         return False
@@ -383,6 +429,8 @@ def update_minor_lists_file(filepath: Path, urls: Sequence[str]) -> bool:
 
 def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
     """Fetches and parses a single minor list URL for valid domains."""
+    assert isinstance(url, str) and url.startswith("http"), f"Invalid HTTP URL: {url}"
+
     domains: Set[str] = set()
     invisible_chars_re = re.compile(r"[\s\u200b\ufeff\u200e\u200f]+")
     domain_re = re.compile(
@@ -410,6 +458,8 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
 
                 if domain_re.match(cleaned):
                     domains.add(cleaned)
+
+        logger.debug("Successfully fetched %d domains from URL: %s", len(domains), url)
     except (urllib.error.URLError, OSError, TimeoutError) as err:
         logger.warning("Failed to fetch minor list content from %s: %s", url, err)
 
@@ -419,8 +469,10 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
 @with_spinner("Pulling and parsing content from minor list URLs...")
 def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
     """Downloads minor list URLs concurrently and extracts unique domain entries."""
-    path = Path(filepath).resolve()
+    assert isinstance(filepath, Path), f"Expected Path object, got {type(filepath)}"
+    path = filepath.resolve()
     if not path.is_file():
+        logger.debug("Minor lists file does not exist: %s", path)
         return frozenset()
 
     urls: List[str] = []
@@ -431,12 +483,15 @@ def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
                 for line in file
                 if line.strip() and not line.startswith("#")
             ]
-    except OSError:
+    except OSError as err:
+        logger.error("Error reading minor list file %s: %s", path, err)
         return frozenset()
 
     if not urls:
+        logger.info("No URLs found in minor lists file %s", path)
         return frozenset()
 
+    logger.info("Pulling domains from %d minor list URLs in parallel...", len(urls))
     extracted_domains: Set[str] = set()
     headers = {"User-Agent": "Mozilla/5.0 (Pi-hole Blocklist Consolidation Tool)"}
 
@@ -448,13 +503,17 @@ def pull_and_parse_minor_list_domains(filepath: Path) -> FrozenSet[str]:
         for future in as_completed(futures):
             extracted_domains.update(future.result())
 
+    logger.info("Extracted %d total unique domains from minor list URLs", len(extracted_domains))
     return frozenset(extracted_domains)
 
 
 @with_spinner("Fetching existing blocklist entries from gravity database...")
 def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
     """Retrieves unique exact block (type 1) domains from gravity.db."""
-    path = Path(db_path).resolve()
+    assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
+    path = db_path.resolve()
+    assert path.is_file(), f"Database file missing at {path}"
+
     uri = f"file:{path.as_posix()}?mode=ro"
     db_domains: Set[str] = set()
 
@@ -471,6 +530,7 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
         logger.error("Error reading domainlist from gravity.db: %s", err)
         return frozenset()
 
+    logger.info("Loaded %d exact block domains (type=1) from gravity.db", len(db_domains))
     return frozenset(db_domains)
 
 
@@ -478,24 +538,35 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
 def merge_domain_entries(*domain_sets: FrozenSet[str]) -> Tuple[str, ...]:
     """Merges multiple sets of domains, deduplicates, and sorts alphabetically."""
     merged: Set[str] = set()
-    for domain_set in domain_sets:
+    for idx, domain_set in enumerate(domain_sets, 1):
+        assert isinstance(domain_set, frozenset), f"Set #{idx} must be frozenset, got {type(domain_set)}"
         merged.update(domain_set)
+
+    logger.info("Merged %d input domain sets into %d total unique domains", len(domain_sets), len(merged))
     return tuple(sorted(merged))
 
 
 @with_spinner("Writing updated entries to blacklist file...")
 def update(filepath: Path, domains: Sequence[str]) -> bool:
     """Atomically updates the blacklist file using a temporary file replacement."""
-    path = Path(filepath).resolve()
+    assert isinstance(filepath, Path), f"Expected Path object, got {type(filepath)}"
+    assert hasattr(domains, "__len__"), "domains must have a length"
+
+    path = filepath.resolve()
+    assert path.parent.exists(), f"Parent directory does not exist: {path.parent}"
+
     temp_path = path.with_suffix(".tmp")
 
     try:
         with temp_path.open("w", encoding="utf-8") as file:
             file.write("\n".join(domains) + ("\n" if domains else ""))
+
+        assert temp_path.is_file(), "Temporary update file was not written properly"
         temp_path.replace(path)
+        logger.info("Successfully updated %s with %d domains", path, len(domains))
         return True
     except OSError as err:
-        logger.error("Error updating blacklist file: %s", err)
+        logger.error("Error writing updated domains to %s: %s", path, err)
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
         return False
@@ -505,21 +576,28 @@ def _execute_batch_delete(
     cursor: sqlite3.Cursor, query_template: str, items: Sequence[Any]
 ) -> int:
     """Executes chunked batch delete queries to prevent SQLite variable limits."""
+    assert items, "Cannot execute batch delete on empty item sequence"
     batch_size = 900
     deleted = 0
     for i in range(0, len(items), batch_size):
         batch = items[i : i + batch_size]
         placeholders = ",".join("?" for _ in batch)
-        cursor.execute(query_template.format(placeholders=placeholders), batch)
+        query = query_template.format(placeholders=placeholders)
+        cursor.execute(query, batch)
         deleted += cursor.rowcount
+
+    logger.debug("Executed batch delete query. Target count: %d | Rows affected: %d", len(items), deleted)
     return deleted
 
 
 @with_spinner("Purging matching domains from gravity database...")
 def purge_domains(domains: Sequence[str], db_path: Path) -> int:
     """Deletes exact blocklist domains from gravity.db in atomic batch queries."""
-    path = Path(db_path).resolve()
+    assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
+    path = db_path.resolve()
+
     if not path.is_file() or not domains:
+        logger.info("Purge skipped: Empty domain list or missing DB file %s", path)
         return 0
 
     domain_set = set(domains)
@@ -544,6 +622,7 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
                     )
 
             if not target_ids:
+                logger.info("No matching domains found in domainlist table to purge.")
                 return 0
 
             group_query = (
@@ -556,12 +635,13 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
             )
 
             with conn:
-                _execute_batch_delete(cursor, group_query, target_ids)
+                del_groups = _execute_batch_delete(cursor, group_query, target_ids)
                 deleted_count = _execute_batch_delete(
                     cursor, domain_query, target_domains
                 )
 
-            logger.info("Purged %d custom block domains from domainlist", deleted_count)
+            assert deleted_count == len(target_ids), f"Expected to delete {len(target_ids)} domains, deleted {deleted_count}"
+            logger.info("Purged %d domains and %d group references from gravity.db", deleted_count, del_groups)
             return deleted_count
     except sqlite3.Error as err:
         logger.error("Error purging domains from gravity.db: %s", err)
@@ -571,22 +651,28 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
 @with_spinner("Deleting targeted adlists from gravity database...")
 def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
     """Removes minor and empty adlists and associated group references from gravity.db."""
-    path = Path(db_path).resolve()
+    assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
+    assert all(isinstance(i, int) for i in adlist_ids), "All adlist_ids must be integers"
+
+    path = db_path.resolve()
     if not path.is_file() or not adlist_ids:
+        logger.info("No adlist IDs supplied or DB file missing; skipping deletion.")
         return True
+
+    logger.info("Preparing to delete %d adlists from database...", len(adlist_ids))
 
     try:
         with sqlite3.connect(path, timeout=20) as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
 
-            # Log exact URLs being deleted prior to execution
             placeholders = ",".join("?" for _ in adlist_ids)
             cursor.execute(
                 f"SELECT id, address FROM adlist WHERE id IN ({placeholders});",
                 list(adlist_ids),
             )
-            for aid, url in cursor.fetchall():
+            found_records = cursor.fetchall()
+            for aid, url in found_records:
                 logger.warning(
                     "--> DELETING ADLIST FROM DB: ID=%s | URL=%s", aid, url
                 )
@@ -598,18 +684,16 @@ def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
             adlist_query = "DELETE FROM adlist WHERE id IN ({placeholders});"
 
             with conn:
-                del_groups = _execute_batch_delete(
-                    cursor, adlist_group_query, adlist_ids
-                )
-                del_gravity = _execute_batch_delete(
-                    cursor, gravity_query, adlist_ids
-                )
-                del_adlists = _execute_batch_delete(
-                    cursor, adlist_query, adlist_ids
-                )
+                del_groups = _execute_batch_delete(cursor, adlist_group_query, adlist_ids)
+                del_gravity = _execute_batch_delete(cursor, gravity_query, adlist_ids)
+                del_adlists = _execute_batch_delete(cursor, adlist_query, adlist_ids)
+
+            assert del_adlists == len(found_records), (
+                f"Expected to delete {len(found_records)} adlist records, but deleted {del_adlists}"
+            )
 
             logger.info(
-                "DB PURGE SUMMARY: Deleted %d adlist records, %d gravity links, %d group links",
+                "DB PURGE COMPLETE: Removed %d adlists, %d gravity entries, %d group links",
                 del_adlists,
                 del_gravity,
                 del_groups,
@@ -626,14 +710,18 @@ def _check_dns_socket(
     """Verifies that local DNS port 53 is accepting TCP socket connections."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
+            logger.debug("DNS port check successful on %s:%d", host, port)
             return True
-    except (OSError, socket.timeout):
+    except (OSError, socket.timeout) as err:
+        logger.debug("DNS port check failed on %s:%d - %s", host, port, err)
         return False
 
 
 def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) -> bool:
     """Polls container state until reported healthy or running with DNS connectivity."""
+    assert target_container, "Container name cannot be empty"
     start_time = time.time()
+
     while time.time() - start_time < max_wait_sec:
         try:
             inspect_cmd = [
@@ -648,13 +736,17 @@ def _wait_for_container_health(target_container: str, max_wait_sec: int = 30) ->
                 inspect_cmd, capture_output=True, text=True, check=True, timeout=5
             )
             status, health = res.stdout.strip().split("|")
+            logger.debug("Container %s state: Status=%s | Health=%s", target_container, status, health)
 
             if status == "running" and health in ("healthy", "none"):
                 if _check_dns_socket():
+                    logger.info("Container %s is healthy and DNS port 53 is active", target_container)
                     return True
-        except (subprocess.SubprocessError, ValueError):
-            pass
+        except (subprocess.SubprocessError, ValueError) as err:
+            logger.debug("Waiting for container health check: %s", err)
         time.sleep(1)
+
+    logger.error("Container %s health wait timed out after %d seconds", target_container, max_wait_sec)
     return False
 
 
@@ -663,6 +755,9 @@ def restart_pihole_container(
     target_container: str = CONTAINER_NAME, timeout: int = 30
 ) -> bool:
     """Flushes FTL cache via container commands or performs restart as fallback."""
+    assert target_container, "Target container name must be provided"
+    logger.info("Reloading Pi-hole DNS engine in container: %s", target_container)
+
     try:
         res = subprocess.run(
             ["docker", "exec", target_container, "killall", "-HUP", "pihole-FTL"],
@@ -680,9 +775,10 @@ def restart_pihole_container(
         )
 
         if res.returncode == 0 and _check_dns_socket():
+            logger.info("Successfully reloaded FTL cache and verified DNS socket")
             return True
-    except subprocess.SubprocessError:
-        pass
+    except subprocess.SubprocessError as err:
+        logger.warning("DNS reload failed; attempting full container restart: %s", err)
 
     try:
         subprocess.run(
@@ -699,7 +795,7 @@ def restart_pihole_container(
         )
         return _wait_for_container_health(target_container, max_wait_sec=timeout)
     except (subprocess.SubprocessError, OSError) as err:
-        logger.error("Error restarting container: %s", err)
+        logger.error("Error restarting container %s: %s", target_container, err)
         return False
 
 
@@ -708,18 +804,23 @@ def verify_updates(
     filepath: Path, expected_domains: Sequence[str], db_path: Path
 ) -> bool:
     """Validates line counts and confirms entries were purged from database."""
-    file_path = Path(filepath).resolve()
-    db_file = Path(db_path).resolve()
+    assert isinstance(filepath, Path), f"Expected Path for filepath, got {type(filepath)}"
+    assert isinstance(db_path, Path), f"Expected Path for db_path, got {type(db_path)}"
+
+    file_path = filepath.resolve()
+    db_file = db_path.resolve()
 
     try:
         with file_path.open("r", encoding="utf-8") as f:
             file_lines = sum(1 for line in f if line.strip())
-    except OSError:
+    except OSError as err:
+        logger.error("Error reading file lines from %s: %s", file_path, err)
         return False
 
     if file_lines != len(expected_domains):
         logger.warning(
-            "File line count mismatch: expected %d, got %d",
+            "VERIFICATION FAILED: Line count mismatch in %s. Expected=%d | Found=%d",
+            file_path,
             len(expected_domains),
             file_lines,
         )
@@ -741,20 +842,25 @@ def verify_updates(
                 cursor.execute(query, batch)
                 exact_match_count += cursor.fetchone()[0]
     except sqlite3.Error as err:
-        logger.error("Error verifying gravity DB state: %s", err)
+        logger.error("Error verifying database purge status: %s", err)
         return False
 
-    return exact_match_count == 0
+    assert exact_match_count == 0, f"Verification failed: {exact_match_count} domains still remain in DB domainlist"
+    logger.info("Verification check passed: Blacklist count matches and DB purged successfully")
+    return True
 
 
 @with_spinner("Staging, committing, and pushing updates to GitHub...")
 def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
     """Commits changes to Git repo using a generated hex commit message if omitted."""
-    path = Path(filepath).resolve()
+    assert isinstance(filepath, Path), f"Expected Path object, got {type(filepath)}"
+    path = filepath.resolve()
     repo_dir = path.parent
 
     if not commit_msg:
         commit_msg = secrets.token_hex(4)
+
+    logger.info("Executing Git workflow in directory: %s", repo_dir)
 
     try:
         status = subprocess.run(
@@ -767,6 +873,7 @@ def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
         )
 
         if not status.stdout.strip():
+            logger.info("No modified files detected in git repo; skipping push.")
             return True
 
         subprocess.run(
@@ -791,9 +898,10 @@ def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
             timeout=30,
         )
 
+        logger.info("Git commit and push completed successfully (Commit message: %s)", commit_msg)
         return True
     except subprocess.SubprocessError as err:
-        logger.error("Git automation failed: %s", err)
+        logger.error("Git operation failed: %s", err)
         return False
 
 
@@ -817,47 +925,59 @@ def check_gravity_db_integrity() -> bool:
 
 def main() -> None:
     """Main execution pipeline."""
-    logger.info("Starting Pi-hole blacklist sync and database audit...")
+    logger.info("=== Starting Pi-hole blacklist sync and database audit ===")
 
-    if not check_system_dependencies():
-        sys.exit(1)
+    assert check_system_dependencies(), "System dependencies missing (docker/git)"
+    assert check_gravity_db(), f"Gravity DB path does not exist: {GRAVITY_DB_PATH}"
+    assert check_blacklist_file(), f"Blacklist file path does not exist: {BLACKLIST_PATH}"
+    assert check_gravity_db_integrity(), f"Gravity DB at {GRAVITY_DB_PATH} failed integrity check"
 
-    if not (
-        check_gravity_db() and check_blacklist_file() and check_gravity_db_integrity()
-    ):
-        sys.exit(1)
-
+    # 1. Deduplicate minor_lists.txt and find matching adlist IDs in DB
     existing_minor_ids = process_minor_lists_file(MINOR_LISTS_PATH, GRAVITY_DB_PATH)
+    logger.info("Existing minor list DB match count: %d", len(existing_minor_ids))
+
+    # 2. Fetch active minor blocklists (1-100 entries) from DB
     minor_ids, minor_urls = fetch_minor_blocklists(GRAVITY_DB_PATH)
+
+    # 3. Fetch empty blocklists (0 entries) from DB
     empty_ids = fetch_empty_blocklists(GRAVITY_DB_PATH)
 
+    # 4. Save/merge minor list origin URLs to minor_lists.txt
     if minor_urls:
         update_minor_lists_file(MINOR_LISTS_PATH, minor_urls)
 
+    # 5. Extract domain content from minor list URLs
     minor_domains = pull_and_parse_minor_list_domains(MINOR_LISTS_PATH)
+
+    # 6. Parse blacklist file and existing type-1 domains from DB
     file_entries = parse_blacklist(BLACKLIST_PATH)
     db_entries = load_gravity_db_entries(GRAVITY_DB_PATH)
 
+    # 7. Merge all domain sets into deduplicated tuple
     combined_domains = merge_domain_entries(file_entries, db_entries, minor_domains)
+    assert len(combined_domains) >= len(file_entries), "Combined set cannot be smaller than existing blacklist file"
 
-    if not update(BLACKLIST_PATH, combined_domains):
-        sys.exit(1)
+    # 8. Write updated merged entries back to blacklist file
+    assert update(BLACKLIST_PATH, combined_domains), "Failed to write blacklist file"
 
-    purge_domains(combined_domains, GRAVITY_DB_PATH)
+    # 9. Purge exact block domains from domainlist table in gravity DB
+    purged_count = purge_domains(combined_domains, GRAVITY_DB_PATH)
+    logger.info("Total exact block domains purged from DB: %d", purged_count)
 
+    # 10. Delete matched minor, new minor, and empty adlists from DB
     all_adlists_to_delete = list(set(minor_ids + empty_ids + existing_minor_ids))
-    logger.info("Total adlist IDs target for deletion: %s", all_adlists_to_delete)
+    logger.info("Target deletion list IDs (Merged): %s", all_adlists_to_delete)
 
     if all_adlists_to_delete:
-        delete_minor_adlists(all_adlists_to_delete, GRAVITY_DB_PATH)
+        assert delete_minor_adlists(all_adlists_to_delete, GRAVITY_DB_PATH), "Failed to delete adlists"
 
-    verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
-    restart_pihole_container(CONTAINER_NAME)
+    assert verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH), "Verification failed"
+    assert restart_pihole_container(CONTAINER_NAME), "Failed to reload or restart Pi-hole container"
 
     commit_hex = secrets.token_hex(4)
     push_to_github(BLACKLIST_PATH, commit_msg=commit_hex)
 
-    logger.info("Sync pipeline completed successfully.")
+    logger.info("=== Sync pipeline completed successfully ===")
 
 
 if __name__ == "__main__":
