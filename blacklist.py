@@ -1,5 +1,6 @@
 """Pi-hole blocklist sync, minor list consolidation, and DB purging tool."""
 
+import logging
 import os
 import re
 import secrets
@@ -52,10 +53,14 @@ CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
 
 IS_VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
 
-# --- Logging Configuration (Disabled globally) ---
-logging_module = __import__("logging")
-logging_module.disable(logging_module.CRITICAL)
-logger = logging_module.getLogger("pihole_blacklist")
+# --- Logging Configuration ---
+logger = logging.getLogger("pihole_blacklist")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -130,7 +135,8 @@ def with_spinner(message: str = "Loading...") -> Callable[[F], F]:
             except KeyboardInterrupt:
                 spinner.stop(success=False)
                 sys.exit(130)
-            except Exception:  # pylint: disable=broad-exception-caught
+            except Exception as err:  # pylint: disable=broad-exception-caught
+                logger.error("Unhandled exception in %s: %s", func.__name__, err)
                 spinner.stop(success=False)
                 return False
 
@@ -144,6 +150,8 @@ def check_system_dependencies() -> bool:
     """Verifies all required CLI dependencies are present in system PATH."""
     required_cmds = ["docker", "git"]
     missing = [cmd for cmd in required_cmds if shutil.which(cmd) is None]
+    if missing:
+        logger.error("Missing system dependencies: %s", missing)
     return not missing
 
 
@@ -203,7 +211,8 @@ def parse_blacklist(filepath: Path) -> FrozenSet[str]:
 
                 if domain_re.match(cleaned_line):
                     cleaned_entries.add(cleaned_line)
-    except OSError:
+    except OSError as err:
+        logger.error("Failed to read blacklist file: %s", err)
         return frozenset()
 
     return frozenset(cleaned_entries)
@@ -222,19 +231,26 @@ def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
         with sqlite3.connect(uri, uri=True, timeout=20) as conn:
             cursor = conn.cursor()
             query = """
-                SELECT a.id, a.address
+                SELECT a.id, a.address, COUNT(g.domain) AS domain_count
                 FROM adlist a
                 JOIN gravity g ON a.id = g.adlist_id
                 GROUP BY a.id, a.address
                 HAVING COUNT(g.domain) >= 1 AND COUNT(g.domain) <= 100;
             """
             cursor.execute(query)
-            for adlist_id, address in cursor.fetchall():
+            for adlist_id, address, count in cursor.fetchall():
                 if address:
                     minor_ids.append(adlist_id)
-                    minor_urls.append(address.strip())
-    except sqlite3.Error:
-        pass
+                    url_str = address.strip()
+                    minor_urls.append(url_str)
+                    logger.info(
+                        "FLAGGED MINOR LIST (1-100 entries): ID=%s | Entries=%d | URL=%s",
+                        adlist_id,
+                        count,
+                        url_str,
+                    )
+    except sqlite3.Error as err:
+        logger.error("Error querying minor blocklists: %s", err)
 
     return minor_ids, minor_urls
 
@@ -250,17 +266,22 @@ def fetch_empty_blocklists(db_path: Path) -> List[int]:
         with sqlite3.connect(uri, uri=True, timeout=20) as conn:
             cursor = conn.cursor()
             query = """
-                SELECT a.id
+                SELECT a.id, a.address
                 FROM adlist a
                 LEFT JOIN gravity g ON a.id = g.adlist_id
-                GROUP BY a.id
+                GROUP BY a.id, a.address
                 HAVING COUNT(g.domain) = 0;
             """
             cursor.execute(query)
-            for (adlist_id,) in cursor.fetchall():
+            for adlist_id, address in cursor.fetchall():
                 empty_ids.append(adlist_id)
-    except sqlite3.Error:
-        pass
+                logger.info(
+                    "FLAGGED EMPTY LIST (0 entries): ID=%s | URL=%s",
+                    adlist_id,
+                    address,
+                )
+    except sqlite3.Error as err:
+        logger.error("Error querying empty blocklists: %s", err)
 
     return empty_ids
 
@@ -276,12 +297,17 @@ def _fetch_matching_adlist_ids(db_path: Path, urls: List[str]) -> List[int]:
             for i in range(0, len(urls), batch_size):
                 batch = urls[i : i + batch_size]
                 placeholders = ",".join("?" for _ in batch)
-                query = f"SELECT id FROM adlist WHERE address IN ({placeholders});"
+                query = f"SELECT id, address FROM adlist WHERE address IN ({placeholders});"
                 cursor.execute(query, batch)
-                for (adlist_id,) in cursor.fetchall():
+                for adlist_id, address in cursor.fetchall():
                     matched_ids.append(adlist_id)
-    except sqlite3.Error:
-        pass
+                    logger.info(
+                        "MATCHED MINOR_LISTS.TXT URL TO DB: ID=%s | URL=%s",
+                        adlist_id,
+                        address,
+                    )
+    except sqlite3.Error as err:
+        logger.error("Error matching adlist URLs: %s", err)
 
     return matched_ids
 
@@ -300,18 +326,19 @@ def process_minor_lists_file(filepath: Path, db_path: Path) -> List[int]:
                 cleaned = line.strip()
                 if cleaned and not cleaned.startswith("#"):
                     unique_urls.add(cleaned)
-    except OSError:
+    except OSError as err:
+        logger.error("Error reading minor_lists file: %s", err)
         return []
 
     sorted_urls = sorted(unique_urls)
 
-    # Overwrite the file to ensure no duplicate entries exist upon execution
     temp_path = path.with_suffix(".tmp")
     try:
         with temp_path.open("w", encoding="utf-8") as file:
             file.write("\n".join(sorted_urls) + ("\n" if sorted_urls else ""))
         temp_path.replace(path)
-    except OSError:
+    except OSError as err:
+        logger.error("Error writing deduplicated minor_lists file: %s", err)
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
 
@@ -347,7 +374,8 @@ def update_minor_lists_file(filepath: Path, urls: Sequence[str]) -> bool:
             file.write("\n".join(sorted_urls) + ("\n" if sorted_urls else ""))
         temp_path.replace(path)
         return True
-    except OSError:
+    except OSError as err:
+        logger.error("Error updating minor lists file: %s", err)
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
         return False
@@ -382,8 +410,8 @@ def _fetch_minor_list_domains(url: str, headers: Dict[str, str]) -> Set[str]:
 
                 if domain_re.match(cleaned):
                     domains.add(cleaned)
-    except (urllib.error.URLError, OSError, TimeoutError):
-        pass
+    except (urllib.error.URLError, OSError, TimeoutError) as err:
+        logger.warning("Failed to fetch minor list content from %s: %s", url, err)
 
     return domains
 
@@ -439,7 +467,8 @@ def load_gravity_db_entries(db_path: Path) -> FrozenSet[str]:
                     cleaned = domain.strip().lower()
                     if cleaned:
                         db_domains.add(cleaned)
-    except sqlite3.Error:
+    except sqlite3.Error as err:
+        logger.error("Error reading domainlist from gravity.db: %s", err)
         return frozenset()
 
     return frozenset(db_domains)
@@ -465,7 +494,8 @@ def update(filepath: Path, domains: Sequence[str]) -> bool:
             file.write("\n".join(domains) + ("\n" if domains else ""))
         temp_path.replace(path)
         return True
-    except OSError:
+    except OSError as err:
+        logger.error("Error updating blacklist file: %s", err)
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
         return False
@@ -507,6 +537,11 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
                 if domain_name and domain_name.strip().lower() in domain_set:
                     target_ids.append(domain_id)
                     target_domains.append(domain_name)
+                    logger.info(
+                        "PURGING DOMAIN FROM DOMAINLIST: ID=%s | Domain=%s",
+                        domain_id,
+                        domain_name,
+                    )
 
             if not target_ids:
                 return 0
@@ -526,8 +561,10 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
                     cursor, domain_query, target_domains
                 )
 
+            logger.info("Purged %d custom block domains from domainlist", deleted_count)
             return deleted_count
-    except sqlite3.Error:
+    except sqlite3.Error as err:
+        logger.error("Error purging domains from gravity.db: %s", err)
         return 0
 
 
@@ -543,6 +580,17 @@ def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
             cursor = conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
 
+            # Log exact URLs being deleted prior to execution
+            placeholders = ",".join("?" for _ in adlist_ids)
+            cursor.execute(
+                f"SELECT id, address FROM adlist WHERE id IN ({placeholders});",
+                list(adlist_ids),
+            )
+            for aid, url in cursor.fetchall():
+                logger.warning(
+                    "--> DELETING ADLIST FROM DB: ID=%s | URL=%s", aid, url
+                )
+
             adlist_group_query = (
                 "DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});"
             )
@@ -550,12 +598,25 @@ def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
             adlist_query = "DELETE FROM adlist WHERE id IN ({placeholders});"
 
             with conn:
-                _execute_batch_delete(cursor, adlist_group_query, adlist_ids)
-                _execute_batch_delete(cursor, gravity_query, adlist_ids)
-                _execute_batch_delete(cursor, adlist_query, adlist_ids)
+                del_groups = _execute_batch_delete(
+                    cursor, adlist_group_query, adlist_ids
+                )
+                del_gravity = _execute_batch_delete(
+                    cursor, gravity_query, adlist_ids
+                )
+                del_adlists = _execute_batch_delete(
+                    cursor, adlist_query, adlist_ids
+                )
 
+            logger.info(
+                "DB PURGE SUMMARY: Deleted %d adlist records, %d gravity links, %d group links",
+                del_adlists,
+                del_gravity,
+                del_groups,
+            )
             return True
-    except sqlite3.Error:
+    except sqlite3.Error as err:
+        logger.error("Error executing adlist deletion queries: %s", err)
         return False
 
 
@@ -637,7 +698,8 @@ def restart_pihole_container(
             timeout=15,
         )
         return _wait_for_container_health(target_container, max_wait_sec=timeout)
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as err:
+        logger.error("Error restarting container: %s", err)
         return False
 
 
@@ -656,6 +718,11 @@ def verify_updates(
         return False
 
     if file_lines != len(expected_domains):
+        logger.warning(
+            "File line count mismatch: expected %d, got %d",
+            len(expected_domains),
+            file_lines,
+        )
         return False
 
     batch_size = 900
@@ -673,7 +740,8 @@ def verify_updates(
                 )
                 cursor.execute(query, batch)
                 exact_match_count += cursor.fetchone()[0]
-    except sqlite3.Error:
+    except sqlite3.Error as err:
+        logger.error("Error verifying gravity DB state: %s", err)
         return False
 
     return exact_match_count == 0
@@ -724,7 +792,8 @@ def push_to_github(filepath: Path, commit_msg: Optional[str] = None) -> bool:
         )
 
         return True
-    except subprocess.SubprocessError:
+    except subprocess.SubprocessError as err:
+        logger.error("Git automation failed: %s", err)
         return False
 
 
@@ -748,6 +817,8 @@ def check_gravity_db_integrity() -> bool:
 
 def main() -> None:
     """Main execution pipeline."""
+    logger.info("Starting Pi-hole blacklist sync and database audit...")
+
     if not check_system_dependencies():
         sys.exit(1)
 
@@ -756,50 +827,37 @@ def main() -> None:
     ):
         sys.exit(1)
 
-    # 1. Ensure minor_lists.txt is deduplicated and fetch matching DB adlist IDs to delete
     existing_minor_ids = process_minor_lists_file(MINOR_LISTS_PATH, GRAVITY_DB_PATH)
-
-    # 2. Detect minor blocklists (1–100 entries) from gravity DB
     minor_ids, minor_urls = fetch_minor_blocklists(GRAVITY_DB_PATH)
-
-    # 3. Detect completely empty blocklists (0 entries)
     empty_ids = fetch_empty_blocklists(GRAVITY_DB_PATH)
 
-    # 4. Save/merge minor list origin URLs to minor_lists.txt
     if minor_urls:
         update_minor_lists_file(MINOR_LISTS_PATH, minor_urls)
 
-    # 5. Pull minor list contents from origin URLs and extract unique domains
     minor_domains = pull_and_parse_minor_list_domains(MINOR_LISTS_PATH)
-
-    # 6. Parse existing blacklist entries and gravity DB type-1 domains
     file_entries = parse_blacklist(BLACKLIST_PATH)
     db_entries = load_gravity_db_entries(GRAVITY_DB_PATH)
 
-    # 7. Merge all domain sources into a deduplicated set
     combined_domains = merge_domain_entries(file_entries, db_entries, minor_domains)
 
-    # 8. Write merged domains to blacklist.txt
     if not update(BLACKLIST_PATH, combined_domains):
         sys.exit(1)
 
-    # 9. Delete exact block domains from domainlist table in gravity.db
     purge_domains(combined_domains, GRAVITY_DB_PATH)
 
-    # 10. Delete the matched minor, updated minor, and empty adlists from gravity DB
     all_adlists_to_delete = list(set(minor_ids + empty_ids + existing_minor_ids))
+    logger.info("Total adlist IDs target for deletion: %s", all_adlists_to_delete)
+
     if all_adlists_to_delete:
         delete_minor_adlists(all_adlists_to_delete, GRAVITY_DB_PATH)
 
     verify_updates(BLACKLIST_PATH, combined_domains, GRAVITY_DB_PATH)
     restart_pihole_container(CONTAINER_NAME)
 
-    # Generate 8-character hex commit string (e.g. "1ba0037a")
     commit_hex = secrets.token_hex(4)
-    push_to_github(
-        BLACKLIST_PATH,
-        commit_msg=commit_hex,
-    )
+    push_to_github(BLACKLIST_PATH, commit_msg=commit_hex)
+
+    logger.info("Sync pipeline completed successfully.")
 
 
 if __name__ == "__main__":
