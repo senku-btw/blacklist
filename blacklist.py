@@ -51,8 +51,6 @@ MINOR_LISTS_PATH = Path(
 ).resolve()
 CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
 
-IS_VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
-
 # --- Logging Configuration ---
 logger = logging.getLogger("pihole_blacklist")
 logging.basicConfig(
@@ -75,7 +73,7 @@ class TerminalSpinner:
         self.delay = 0.08
         self._running = False
         self._spinner_thread: Optional[threading.Thread] = None
-        self._is_tty = sys.stdout.isatty() and IS_VERBOSE
+        self._is_tty = sys.stdout.isatty()
 
     def _spin(self) -> None:
         """Runs the loop that prints animated spinner characters to stdout."""
@@ -89,8 +87,6 @@ class TerminalSpinner:
 
     def start(self) -> None:
         """Starts the spinner thread or prints fallback output for non-TTY."""
-        if not IS_VERBOSE:
-            return
         if not self._is_tty:
             sys.stdout.write(f"{self.message} (Started)\n")
             sys.stdout.flush()
@@ -101,8 +97,6 @@ class TerminalSpinner:
 
     def stop(self, success: bool = True) -> None:
         """Stops the spinner thread and prints completion state."""
-        if not IS_VERBOSE:
-            return
         if not self._is_tty:
             status = "Completed" if success else "Failed"
             sys.stdout.write(f"{self.message} ({status})\n")
