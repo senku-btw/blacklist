@@ -272,15 +272,55 @@ def fetch_minor_blocklists(db_path: Path) -> Tuple[List[int], List[str]]:
     return minor_ids, minor_urls
 
 
-@with_spinner("Identifying empty blocklists (0 entries) in gravity database...")
+def _is_url_truly_empty_or_dead(url: str, headers: Dict[str, str]) -> bool:
+    """Verifies over HTTP whether a URL is dead (404/410/403) or genuinely empty (0 rules).
+
+    Returns True ONLY if:
+    - Server returns HTTP 404, 410, 403, or 451 (permanently dead/unavailable list)
+    - Server returns HTTP 200 OK but body contains 0 actionable rules after comment stripping
+
+    Returns False (preserves list) on:
+    - Transient network issues, socket timeouts, 5xx server errors
+    - Detection of ANY non-comment content line (allowlists, adblock syntax, hosts, regex)
+    """
+    assert isinstance(url, str) and url.startswith("http"), f"Invalid HTTP URL: {url}"
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            content = response.read().decode("utf-8", errors="ignore")
+
+            for line in content.splitlines():
+                # Strip inline comments (supports standard #, Adblock !, and JS/C // comments)
+                cleaned = line.split("#", 1)[0].split("!", 1)[0].split("//", 1)[0].strip()
+
+                if cleaned:
+                    # Found at least 1 non-comment line containing data/rules; list is active!
+                    return False
+
+            # Complete file scanned with 0 actionable payload lines -> genuinely empty
+            return True
+
+    except urllib.error.HTTPError as err:
+        if err.code in (404, 410, 403, 451):
+            logger.warning("URL returned HTTP %d (Dead/Unavailable endpoint): %s", err.code, url)
+            return True  # Confirmed dead list -> safe for deletion
+        logger.warning("HTTP %d error fetching %s; preserving list (fail-safe)", err.code, url)
+        return False
+    except (urllib.error.URLError, OSError, TimeoutError) as err:
+        logger.warning("Network failure verifying %s (%s); preserving list (fail-safe)", url, err)
+        return False
+
+
+@with_spinner("Querying SQLite for 0-entry lists and performing HTTP content verification...")
 def fetch_empty_blocklists(db_path: Path) -> List[int]:
-    """Identifies totally empty blocklists in gravity.db to be cleansed."""
+    """Queries candidate 0-entry lists in gravity.db and verifies live status over HTTP."""
     assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
     path = db_path.resolve()
     assert path.is_file(), f"Database path does not exist: {path}"
 
     uri = f"file:{path.as_posix()}?mode=ro"
-    empty_ids: List[int] = []
+    candidate_lists: List[Tuple[int, str]] = []
 
     try:
         with sqlite3.connect(uri, uri=True, timeout=20) as conn:
@@ -295,14 +335,26 @@ def fetch_empty_blocklists(db_path: Path) -> List[int]:
             cursor.execute(query)
             for adlist_id, address in cursor.fetchall():
                 assert isinstance(adlist_id, int), f"adlist ID must be int, got {type(adlist_id)}"
-                empty_ids.append(adlist_id)
-                logger.info(
-                    "FLAGGED EMPTY LIST (0 entries): ID=%s | URL=%s",
-                    adlist_id,
-                    address,
-                )
+                if address:
+                    candidate_lists.append((adlist_id, address.strip()))
     except sqlite3.Error as err:
-        logger.error("Error querying empty blocklists: %s", err)
+        logger.error("Error querying empty blocklists from SQLite: %s", err)
+        return []
+
+    if not candidate_lists:
+        return []
+
+    logger.info("SQLite found %d list candidates with 0 gravity domains. Verifying content...", len(candidate_lists))
+
+    empty_ids: List[int] = []
+    headers = {"User-Agent": "Mozilla/5.0 (Pi-hole Blocklist Consolidation Tool)"}
+
+    for adlist_id, url in candidate_lists:
+        if _is_url_truly_empty_or_dead(url, headers):
+            empty_ids.append(adlist_id)
+            logger.info("CONFIRMED DEAD/EMPTY LIST (Purging): ID=%s | URL=%s", adlist_id, url)
+        else:
+            logger.info("PRESERVED LIST (Live allowlist or active rules detected): ID=%s | URL=%s", adlist_id, url)
 
     return empty_ids
 
@@ -644,7 +696,7 @@ def purge_domains(domains: Sequence[str], db_path: Path) -> int:
 
 @with_spinner("Deleting targeted adlists from gravity database...")
 def delete_minor_adlists(adlist_ids: Sequence[int], db_path: Path) -> bool:
-    """Removes minor and empty adlists and associated group references from gravity.db."""
+    """Removes minor and verified empty adlists and associated group references from gravity.db."""
     assert isinstance(db_path, Path), f"Expected Path object, got {type(db_path)}"
     assert all(isinstance(i, int) for i in adlist_ids), "All adlist_ids must be integers"
 
@@ -933,7 +985,7 @@ def main() -> None:
     # 2. Fetch active minor blocklists (1-100 entries) from DB
     minor_ids, minor_urls = fetch_minor_blocklists(GRAVITY_DB_PATH)
 
-    # 3. Fetch empty blocklists (0 entries) from DB
+    # 3. Query SQLite for 0-entry lists and perform HTTP verification checks
     empty_ids = fetch_empty_blocklists(GRAVITY_DB_PATH)
 
     # 4. Save/merge minor list origin URLs to minor_lists.txt
@@ -958,7 +1010,7 @@ def main() -> None:
     purged_count = purge_domains(combined_domains, GRAVITY_DB_PATH)
     logger.info("Total exact block domains purged from DB: %d", purged_count)
 
-    # 10. Delete matched minor, new minor, and empty adlists from DB
+    # 10. Delete matched minor, new minor, and confirmed empty adlists from DB
     all_adlists_to_delete = list(set(minor_ids + empty_ids + existing_minor_ids))
     logger.info("Target deletion list IDs (Merged): %s", all_adlists_to_delete)
 
