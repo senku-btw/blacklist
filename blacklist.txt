@@ -1722,6 +1722,7 @@ forsale.dynadot.com
 fout.jp
 foxnetworks.com
 foxonestop.com
+fp.msedge.net
 franecki.net
 fraudmetrix.cn
 free-pagerank.com
@@ -3061,6 +3062,7 @@ receive-lp1.dg.srv.nintendo.net
 receive-lp1.er.srv.nintendo.net
 redaril.com
 reddit.com
+redditmedia.com
 redirect.at
 redirect.viglink.com
 redirectingat.com
@@ -4011,6 +4013,7 @@ www.geniegroupltd.co.uk
 www.ggcasino.site
 www.girlsml.com
 www.google-analytics.com
+www.google.com
 www.googleadservices.com
 www.gopjn.com
 www.grapeshot.co.uk
