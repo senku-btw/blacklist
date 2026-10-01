@@ -656,6 +656,7 @@ api.launchdarkly.com
 api.leanplum.com
 api.mcr.skype.com
 api.mixpanel.com
+api.mouseflow.com
 api.playanext.com
 api.segment.io
 api.twitter.com
@@ -3592,6 +3593,7 @@ tonemedia.com
 tongariro.pl
 tongdun.cn
 tongdun.net
+tools.mouseflow.com
 topsy.com
 totek-casino.com
 touchclarity.com
