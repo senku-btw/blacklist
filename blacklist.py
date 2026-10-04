@@ -386,6 +386,23 @@ def push_to_github() -> None:
         stderr_msg = e.stderr.decode('utf-8', errors='ignore').strip() if isinstance(e.stderr, bytes) else str(e.stderr or '')
         logger.error(f"GitHub push failed. Git error -> stderr: '{stderr_msg}' | stdout: '{stdout_msg}'")
 
+def force_ftl_restart(container_name: str = "pihole") -> None:
+    """Restarts the FTL process inside the container to force a full DB re-read."""
+    logger.info("Restarting pihole-FTL process inside container...")
+    try:
+        subprocess.run(
+            [DOCKER_BIN, "exec", container_name, "supervisorctl", "restart", "pihole-FTL"],
+            capture_output=True, text=True, check=True, timeout=30
+        )
+        logger.info("pihole-FTL process restarted successfully.")
+    except subprocess.CalledProcessError:
+        # Fallback if supervisorctl is not used in your docker image variant
+        logger.info("supervisorctl failed, attempting direct killall on pihole-FTL...")
+        subprocess.run(
+            [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"],
+            capture_output=True, text=True, check=False, timeout=10
+        )
+        
 # --- ORCHESTRATION ---
 
 def main():
