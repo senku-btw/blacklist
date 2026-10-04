@@ -4,11 +4,9 @@ Pi-hole Gravity Database Manager & Blacklist Migrator
 Production-Grade Release (High Autonomy, Security-Hardened)
 """
 
-from contextlib import closing
 import fcntl
 import logging
 import os
-from pathlib import Path
 import re
 import secrets
 import shutil
@@ -17,6 +15,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
+from pathlib import Path
 from typing import FrozenSet, List, Optional
 
 import requests  # pylint: disable=import-error
@@ -134,9 +134,7 @@ def get_http_session() -> requests.Session:
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET"],
     )
-    adapter = HTTPAdapter(
-        max_retries=retries, pool_connections=10, pool_maxsize=10
-    )
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
@@ -204,7 +202,8 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 1: Exact Blacklist Migration")
     cursor = conn.cursor()
 
-    query = """
+    cursor.execute(
+        """
         SELECT d.id, d.domain 
         FROM domainlist d
         LEFT JOIN domainlist_by_group dbg ON d.id = dbg.domainlist_id
@@ -214,8 +213,8 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
             OR dbg.group_id = 0
             OR (dbg.group_id IS NOT NULL AND (d.comment IS NULL OR d.comment = ''))
         )
-    """
-    cursor.execute(query)
+        """
+    )
     rows = cursor.fetchall()
 
     db_frozenset_items = set()
@@ -266,9 +265,7 @@ def fetch_and_validate_adlist(url: str, session: requests.Session) -> bool:
         domains = sanitize_and_extract_domains(response.text.splitlines())
         return len(domains) == 0
     except requests.RequestException as e:
-        logger.warning(
-            "Failed to fetch adlist %s: %s. Skipping deletion.", url, e
-        )
+        logger.warning("Failed to fetch adlist %s: %s. Skipping deletion.", url, e)
         return False
 
 
@@ -338,13 +335,14 @@ def step3_extract_minor_lists(
     logger.info("Starting Step 3: Minor List Extraction & Migration")
     cursor = conn.cursor()
 
-    query = """
+    cursor.execute(
+        """
         SELECT a.id, a.address 
         FROM adlist a
         JOIN adlist_by_group abg ON a.id = abg.adlist_id
         WHERE abg.group_id = 0 AND a.number BETWEEN 1 AND 100
-    """
-    cursor.execute(query)
+        """
+    )
     minor_lists = cursor.fetchall()
 
     if not minor_lists:
@@ -366,26 +364,26 @@ def step3_extract_minor_lists(
         except requests.RequestException as e:
             logger.warning("Could not fetch domains from minor list %s: %s", url, e)
 
-    new_frozenset = frozenset(all_extracted_domains)
-    existing_frozenset = load_local_file(EXTRA_BLACKLIST_FILE)
-    cumulative_frozenset = frozenset(new_frozenset | existing_frozenset)
-
     try:
-        write_frozenset_to_file(cumulative_frozenset, EXTRA_BLACKLIST_FILE)
+        write_frozenset_to_file(
+            frozenset(all_extracted_domains | load_local_file(EXTRA_BLACKLIST_FILE)),
+            EXTRA_BLACKLIST_FILE,
+        )
     except OSError as e:
         logger.error("Failed to write blacklist-extra.txt. Aborting DB purge: %s", e)
         return
 
     if adlist_ids_to_delete:
         try:
-            placeholders = ",".join("?" * len(adlist_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
             cursor.execute(
-                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders})",
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN "
+                f"({','.join('?' * len(adlist_ids_to_delete))})",
                 adlist_ids_to_delete,
             )
             cursor.execute(
-                f"DELETE FROM adlist WHERE id IN ({placeholders})",
+                f"DELETE FROM adlist WHERE id IN "
+                f"({','.join('?' * len(adlist_ids_to_delete))})",
                 adlist_ids_to_delete,
             )
             cursor.execute("COMMIT;")
@@ -409,24 +407,33 @@ def reload_ftl_engine(container_name: str = "pihole") -> None:
         return
 
     nuke_shm_cmd = [
-        DOCKER_BIN, "exec", container_name, "sh", "-c", "rm -f /dev/shm/FTL-*"
+        DOCKER_BIN,
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        "rm -f /dev/shm/FTL-*",
     ]
-    kill_ftl_cmd = [
-        DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"
-    ]
-    force_kill_cmd = [
-        DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"
-    ]
+    kill_ftl_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"]
+    force_kill_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"]
 
     try:
         logger.debug("Executing: %s", " ".join(nuke_shm_cmd))
         subprocess.run(
-            nuke_shm_cmd, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
+            nuke_shm_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=CMD_TIMEOUT,
         )
 
         logger.debug("Executing: %s", " ".join(kill_ftl_cmd))
         subprocess.run(
-            kill_ftl_cmd, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
+            kill_ftl_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=CMD_TIMEOUT,
         )
 
         logger.info(
@@ -436,7 +443,8 @@ def reload_ftl_engine(container_name: str = "pihole") -> None:
     except subprocess.CalledProcessError as e:
         if "pkill" in e.cmd and e.returncode == 1:
             logger.info(
-                "Graceful kill returned 1 (already stopped/restarting). Attempting SIGKILL fallback..."
+                "Graceful kill returned 1 (already stopped). "
+                "Attempting SIGKILL fallback..."
             )
             subprocess.run(
                 force_kill_cmd, capture_output=True, text=True, check=False, timeout=10
@@ -474,7 +482,9 @@ def push_to_github() -> None:
         )
 
         if not status.stdout.strip():
-            logger.info("No changes detected in target list files. Skipping GitHub push.")
+            logger.info(
+                "No changes detected in target list files. Skipping GitHub push."
+            )
             return
 
         commit_msg = secrets.token_hex(4)
@@ -532,7 +542,9 @@ def main() -> None:
     lock_manager.acquire()
 
     try:
-        with closing(get_db_connection()) as conn, closing(get_http_session()) as http_session:
+        with closing(get_db_connection()) as conn, closing(
+            get_http_session()
+        ) as http_session:
             step1_migrate_exact_blacklists(conn)
             step2_prune_empty_adlists(conn, http_session)
             step3_extract_minor_lists(conn, http_session)
