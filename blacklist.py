@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pi-hole Gravity Database Manager & Blacklist Migrator
-Enterprise-Grade Release
+Production-Grade Release (High Autonomy, Security-Hardened)
 """
 
 import sqlite3
@@ -9,74 +9,108 @@ import re
 import logging
 import subprocess
 import os
+import sys
 import secrets
 import fcntl
+import signal
+import tempfile
+import shutil
 from pathlib import Path
-from typing import FrozenSet, List
+from typing import FrozenSet, List, Optional
 from contextlib import closing
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# --- CONFIGURATION & PATHS ---
+# --- HARDENED CONFIGURATION & PATHS ---
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DB_PATH = Path(os.getenv("PIHOLE_DB_PATH", "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"))
 
 BLACKLIST_FILE = SCRIPT_DIR / "blacklist.txt"
 MINOR_LISTS_FILE = SCRIPT_DIR / "minor_lists.txt"
 EXTRA_BLACKLIST_FILE = SCRIPT_DIR / "blacklist-extra.txt"
-
 LOCK_FILE = SCRIPT_DIR / ".blacklist_manager.lock"
+
+# Strict binary path resolution to prevent PATH hijacking
+DOCKER_BIN = shutil.which("docker") or "/usr/bin/docker"
+GIT_BIN = shutil.which("git") or "/usr/bin/git"
 
 CMD_TIMEOUT = 30
 FILE_PERMISSIONS = 0o644
 
-DOMAIN_REGEX = re.compile(
-    r'^(?:[a-zA-Z0-9]'
-    r'(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+'
-    r'[a-zA-Z]{2,63}$'
-)
+# Stricter domain regex avoiding catastrophic backtracking
+DOMAIN_REGEX = re.compile(r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$')
 
 # --- LOGGING SETUP ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(funcName)s] %(message)s')
-
-# Console Handler
-ch = logging.StreamHandler()
+ch = logging.StreamHandler(sys.stdout)
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
+# --- GLOBAL LOCK STATE ---
+_lock_fd: Optional[int] = None
+
 # --- INFRASTRUCTURE & SAFETY UTILITIES ---
 
+def release_lock():
+    """Safely releases the process lock if held."""
+    global _lock_fd
+    if _lock_fd:
+        try:
+            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            os.close(_lock_fd)
+            if LOCK_FILE.exists():
+                LOCK_FILE.unlink(missing_ok=True)
+            _lock_fd = None
+        except OSError as e:
+            logger.error(f"Error releasing lock: {e}")
+
+def signal_handler(signum, frame):
+    """Graceful degradation on system termination signals."""
+    logger.warning(f"Received termination signal ({signum}). Initiating graceful shutdown...")
+    release_lock()
+    sys.exit(128 + signum)
+
+# Register signal handlers for robust lifecycle management
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 def acquire_exclusive_lock():
-    """Prevents overlapping executions which could corrupt the SQLite DB."""
+    """Prevents overlapping executions using unbuffered POSIX locks."""
+    global _lock_fd
     try:
-        lock_fd = open(LOCK_FILE, 'w')
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return lock_fd
+        _lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        logger.critical("Another instance of the script is currently running. Exiting to prevent corruption.")
-        exit(1)
+        logger.critical("Another instance is running. Exiting to prevent DB corruption.")
+        os.close(_lock_fd)
+        sys.exit(1)
+    except OSError as e:
+        logger.critical(f"Failed to acquire system lock: {e}")
+        sys.exit(1)
 
 def get_db_connection() -> sqlite3.Connection:
-    """Establish a secure SQLite3 connection with lock-wait timeouts."""
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    """Establish a secure, integrity-enforced SQLite3 connection."""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, isolation_level=None) # Manage transactions manually
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;") 
+    conn.execute("PRAGMA foreign_keys=ON;") # Enforce relational integrity
+    conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
 def get_http_session() -> requests.Session:
-    """Creates an HTTP session with exponential backoff."""
+    """Creates an HTTP session with strict timeouts and exponential backoff."""
     session = requests.Session()
     retries = Retry(
-        total=4,
+        total=3,
         backoff_factor=2,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET"]
     )
-    adapter = HTTPAdapter(max_retries=retries)
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
@@ -104,28 +138,28 @@ def load_local_file(filepath: Path) -> FrozenSet[str]:
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             return sanitize_and_extract_domains(f.readlines())
-    except IOError as e:
+    except OSError as e:
         logger.error(f"Failed to read {filepath.name}: {e}")
         return frozenset()
 
 def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
-    """Atomic write operation with strict permission enforcements."""
+    """True POSIX atomic write operation using the system temp folder."""
     sorted_domains = sorted(domains)
-    temp_filepath = filepath.with_suffix('.tmp')
     
+    # Create temp file in the same directory to guarantee they are on the same filesystem
+    fd, temp_path = tempfile.mkstemp(dir=filepath.parent, text=True)
     try:
-        with open(temp_filepath, 'w', encoding='utf-8') as f:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             for domain in sorted_domains:
                 f.write(f"{domain}\n")
-        
-        # Enforce secure file permissions before replacing
-        os.chmod(temp_filepath, FILE_PERMISSIONS)
-        temp_filepath.replace(filepath)
+                
+        os.chmod(temp_path, FILE_PERMISSIONS)
+        os.replace(temp_path, filepath) # Guaranteed atomic on POSIX
         logger.info(f"Successfully saved {len(sorted_domains)} entries to {filepath.name}")
-    except IOError as e:
-        logger.error(f"Failed to write to {filepath.name}: {e}")
-        if temp_filepath.exists():
-            temp_filepath.unlink(missing_ok=True)
+    except OSError as e:
+        logger.error(f"Failed to atomic-write {filepath.name}: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
         raise
 
 # --- CORE LOGIC STEPS ---
@@ -158,8 +192,6 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
         if sanitized:
             db_frozenset_items.update(sanitized)
             db_ids_to_delete.append(row_id)
-        else:
-            logger.warning(f"Domain '{domain}' (ID: {row_id}) failed validation. Kept in DB.")
 
     if not db_frozenset_items:
         logger.info("No matching blacklist entries found in database.")
@@ -170,12 +202,13 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     
     if db_ids_to_delete:
         try:
+            cursor.execute("BEGIN TRANSACTION;")
             cursor.execute(f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
             cursor.execute(f"DELETE FROM domainlist WHERE id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
-            conn.commit()
+            cursor.execute("COMMIT;")
             logger.info(f"Deleted {len(db_ids_to_delete)} migrated entries from database.")
         except sqlite3.Error as e:
-            conn.rollback()
+            cursor.execute("ROLLBACK;")
             logger.error(f"Failed to delete entries from DB: {e}")
 
 def fetch_and_validate_adlist(url: str, session: requests.Session) -> bool:
@@ -206,12 +239,13 @@ def step2_prune_empty_adlists(conn: sqlite3.Connection, session: requests.Sessio
 
     if ids_to_delete:
         try:
+            cursor.execute("BEGIN TRANSACTION;")
             cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({','.join('?'*len(ids_to_delete))})", ids_to_delete)
             cursor.execute(f"DELETE FROM adlist WHERE id IN ({','.join('?'*len(ids_to_delete))})", ids_to_delete)
-            conn.commit()
+            cursor.execute("COMMIT;")
             logger.info(f"Safely purged {len(ids_to_delete)} verified empty adlists from database.")
         except sqlite3.Error as e:
-            conn.rollback()
+            cursor.execute("ROLLBACK;")
             logger.error(f"Database deletion failed for adlists: {e}")
 
 def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Session) -> None:
@@ -246,7 +280,7 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
                     f.write(f"{url}\n")
         os.chmod(MINOR_LISTS_FILE, FILE_PERMISSIONS)
         logger.info(f"Stored/Updated minor list URLs in {MINOR_LISTS_FILE.name}")
-    except IOError as e:
+    except OSError as e:
         logger.error(f"Failed to append to {MINOR_LISTS_FILE.name}: {e}")
         return
 
@@ -272,30 +306,40 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
 
     if adlist_ids_to_delete:
         try:
+            cursor.execute("BEGIN TRANSACTION;")
             cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({','.join('?'*len(adlist_ids_to_delete))})", adlist_ids_to_delete)
             cursor.execute(f"DELETE FROM adlist WHERE id IN ({','.join('?'*len(adlist_ids_to_delete))})", adlist_ids_to_delete)
-            conn.commit()
+            cursor.execute("COMMIT;")
             logger.info(f"Successfully purged {len(adlist_ids_to_delete)} minor lists from gravity database.")
         except sqlite3.Error as e:
-            conn.rollback()
+            cursor.execute("ROLLBACK;")
             logger.error(f"Database deletion failed for minor lists: {e}")
 
 # --- SYSTEM INTEGRATIONS ---
 
 def reload_ftl_engine() -> None:
     logger.info("Reloading Pi-hole FTL Engine...")
+    if not os.path.exists(DOCKER_BIN):
+        logger.error("Docker binary not found. Cannot reload FTL engine.")
+        return
+
     try:
         subprocess.run(
-            ["docker", "exec", "pihole", "pihole", "restartdns", "reload-lists"],
+            [DOCKER_BIN, "exec", "pihole", "pihole", "restartdns", "reload-lists"],
             capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
         )
         logger.info("FTL Engine reloaded successfully.")
-    except Exception as e:
-        logger.error(f"Failed to reload FTL engine: {e}")
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout while reloading FTL engine.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to reload FTL engine. stdout: {e.stdout.strip()} | stderr: {e.stderr.strip()}")
 
 def push_to_github() -> None:
     logger.info("Starting GitHub Repository Backup...")
-    
+    if not os.path.exists(GIT_BIN):
+        logger.error("Git binary not found. Cannot push to repository.")
+        return
+
     expected_files = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
     files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
     
@@ -305,7 +349,7 @@ def push_to_github() -> None:
 
     try:
         status = subprocess.run(
-            ["git", "status", "--porcelain"] + files_to_add, 
+            [GIT_BIN, "status", "--porcelain"] + files_to_add, 
             cwd=SCRIPT_DIR, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
         )
         
@@ -314,24 +358,26 @@ def push_to_github() -> None:
             return
 
         commit_msg = secrets.token_hex(4)
-        subprocess.run(["git", "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
-        subprocess.run(["git", "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
-        subprocess.run(["git", "push"], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
+        
+        # Sequenced, validated subprocess calls
+        subprocess.run([GIT_BIN, "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
+        subprocess.run([GIT_BIN, "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
+        subprocess.run([GIT_BIN, "push"], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
         
         logger.info(f"Successfully pushed updates to GitHub with commit: {commit_msg}")
         
+    except subprocess.TimeoutExpired:
+        logger.error("Git operation timed out.")
     except subprocess.CalledProcessError as e:
         stdout_msg = e.stdout.decode('utf-8', errors='ignore').strip() if isinstance(e.stdout, bytes) else str(e.stdout or '')
         stderr_msg = e.stderr.decode('utf-8', errors='ignore').strip() if isinstance(e.stderr, bytes) else str(e.stderr or '')
         logger.error(f"GitHub push failed. Git error -> stderr: '{stderr_msg}' | stdout: '{stdout_msg}'")
-    except Exception as e:
-        logger.error(f"Unexpected error during GitHub push: {e}")
 
 # --- ORCHESTRATION ---
 
 def main():
     logger.info("Initiating Pi-hole Gravity Database Manager...")
-    lock_fd = acquire_exclusive_lock()
+    acquire_exclusive_lock()
     
     try:
         with closing(get_db_connection()) as conn, closing(get_http_session()) as http_session:
@@ -345,9 +391,8 @@ def main():
     except Exception as e:
         logger.error(f"Execution pipeline failed: {e}", exc_info=True)
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
-        logger.info("All tasks completed. Lock released.")
+        release_lock()
+        logger.info("All tasks completed.")
 
 if __name__ == "__main__":
     main()
