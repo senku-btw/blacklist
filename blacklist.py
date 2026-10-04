@@ -277,20 +277,33 @@ def push_to_github() -> None:
             logger.info("No changes detected in repository. Skipping GitHub push.")
             return
 
-        # 1. Stage the text files explicitly to avoid committing gravity.db accidentally
-        files_to_add = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
+        # 1. Dynamically check which files actually exist before staging
+        expected_files = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
+        files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
+        
+        if not files_to_add:
+            logger.info("No target text files currently exist to commit.")
+            return
+
         subprocess.run(["git", "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True)
         
         # 2. Commit the changes
         subprocess.run(["git", "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True)
         
-        # 3. Push to remote (requires SSH keys or credentials to be pre-configured)
+        # 3. Push to remote
         subprocess.run(["git", "push"], cwd=SCRIPT_DIR, check=True, capture_output=True)
         
         logger.info(f"Successfully pushed updates to GitHub with commit: {commit_msg}")
         
     except subprocess.CalledProcessError as e:
-        error_output = e.stderr.strip() if e.stderr else getattr(e, 'output', 'Unknown Git Error')
+        # Capture raw stderr if standard string conversion fails
+        error_output = ""
+        if e.stderr:
+            # Check if stderr is bytes, decode if necessary
+            error_output = e.stderr.decode('utf-8').strip() if isinstance(e.stderr, bytes) else e.stderr.strip()
+        else:
+            error_output = str(e)
+            
         logger.error(f"GitHub push failed. Git error: {error_output}")
     except FileNotFoundError:
         logger.error("Git command not found. Ensure git is installed and in the PATH.")
