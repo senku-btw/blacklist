@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pi-hole Gravity Database Manager & Blacklist Migrator
-Production-Grade Release
+Production-Grade Release with Minor List Purging
 """
 
 import sqlite3
@@ -18,7 +18,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # --- CONFIGURATION ---
-# Use environment variables as overrides for containerized execution flexibility
 DB_PATH = Path(os.getenv("PIHOLE_DB_PATH", "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"))
 SCRIPT_DIR = Path(__file__).parent.resolve()
 
@@ -48,15 +47,13 @@ def get_db_connection() -> sqlite3.Connection:
     """Establish a secure SQLite3 connection with lock-wait timeouts."""
     if not DB_PATH.exists():
         raise FileNotFoundError(f"Gravity database not found at {DB_PATH}")
-    # timeout=30.0 allows script to wait gracefully if Pi-hole is actively updating gravity
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    # Enable Write-Ahead Logging optimization if supported
     conn.execute("PRAGMA journal_mode=WAL;") 
     return conn
 
 def get_http_session() -> requests.Session:
-    """Creates an HTTP session with exponential backoff for resilience against transient network failures."""
+    """Creates an HTTP session with exponential backoff for resilience."""
     session = requests.Session()
     retries = Retry(
         total=3,
@@ -98,10 +95,7 @@ def load_local_file_to_frozenset(filepath: Path) -> FrozenSet[str]:
         return frozenset()
 
 def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
-    """
-    Writes data using an atomic rename operation.
-    Guarantees the file is never left empty or corrupted if the script crashes mid-write.
-    """
+    """Writes data using an atomic rename operation."""
     sorted_domains = sorted(domains)
     temp_filepath = filepath.with_suffix('.tmp')
     
@@ -110,7 +104,6 @@ def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
             for domain in sorted_domains:
                 f.write(f"{domain}\n")
         
-        # Atomic replace operation (POSIX compliant)
         temp_filepath.replace(filepath)
         logger.info(f"Successfully saved {len(sorted_domains)} entries to {filepath.name}")
     except IOError as e:
@@ -214,7 +207,7 @@ def step2_prune_empty_adlists(conn: sqlite3.Connection, session: requests.Sessio
             logger.error(f"Database deletion failed for adlists: {e}")
 
 def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Session) -> None:
-    logger.info("Starting Step 3: Minor List Extraction")
+    logger.info("Starting Step 3: Minor List Extraction & Migration")
     cursor = conn.cursor()
     
     query = """
@@ -230,6 +223,7 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
         logger.info("No minor lists (1-100 entries) found in default group.")
         return
 
+    adlist_ids_to_delete = [row['id'] for row in minor_lists]
     urls = [row['address'] for row in minor_lists]
     
     existing_urls = set()
@@ -248,6 +242,7 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
         logger.info(f"Stored/Updated minor list URLs in {MINOR_LISTS_FILE.name}")
     except IOError as e:
         logger.error(f"Failed to append to {MINOR_LISTS_FILE.name}: {e}")
+        return
 
     all_extracted_domains = set()
     for url in urls:
@@ -263,7 +258,24 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
     existing_frozenset = load_local_file_to_frozenset(EXTRA_BLACKLIST_FILE)
     
     cumulative_frozenset = frozenset(new_frozenset | existing_frozenset)
-    write_frozenset_to_file(cumulative_frozenset, EXTRA_BLACKLIST_FILE)
+    
+    # 1. Safely write/update blacklist-extra.txt first
+    try:
+        write_frozenset_to_file(cumulative_frozenset, EXTRA_BLACKLIST_FILE)
+    except Exception as e:
+        logger.error(f"Failed to write blacklist-extra.txt. Aborting DB purge for minor lists: {e}")
+        return
+
+    # 2. Once verified on disk, purge those minor lists from the gravity database
+    if adlist_ids_to_delete:
+        try:
+            cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({','.join('?'*len(adlist_ids_to_delete))})", adlist_ids_to_delete)
+            cursor.execute(f"DELETE FROM adlist WHERE id IN ({','.join('?'*len(adlist_ids_to_delete))})", adlist_ids_to_delete)
+            conn.commit()
+            logger.info(f"Successfully purged {len(adlist_ids_to_delete)} minor lists from gravity database.")
+        except sqlite3.Error as e:
+            conn.rollback()
+            logger.error(f"Database deletion failed for minor lists: {e}")
 
 # --- SYSTEM INTEGRATIONS ---
 
@@ -330,7 +342,6 @@ def main():
         logger.critical(f"Database connection failed: {e}")
         return
 
-    # Use a persistent HTTP session for connection pooling and backoff logic
     with get_http_session() as http_session:
         try:
             step1_migrate_exact_blacklists(conn)
