@@ -295,6 +295,7 @@ def reload_ftl_engine() -> None:
         logger.error("Docker command not found.")
 
 def push_to_github() -> None:
+    """Automates committing and pushing generated lists to GitHub securely with robust error diagnostics."""
     logger.info("Starting GitHub Repository Backup...")
     
     commit_msg = secrets.token_hex(4)
@@ -326,8 +327,12 @@ def push_to_github() -> None:
     except subprocess.TimeoutExpired:
         logger.error(f"Git command timed out after {CMD_TIMEOUT} seconds.")
     except subprocess.CalledProcessError as e:
-        error_output = e.stderr.decode('utf-8').strip() if isinstance(e.stderr, bytes) else (e.stderr.strip() if e.stderr else str(e))
-        logger.error(f"GitHub push failed. Git error: {error_output}")
+        # Capture both stdout and stderr to diagnose exact git failure
+        stdout_msg = e.stdout.decode('utf-8', errors='ignore').strip() if isinstance(e.stdout, bytes) else str(e.stdout or '')
+        stderr_msg = e.stderr.decode('utf-8', errors='ignore').strip() if isinstance(e.stderr, bytes) else str(e.stderr or '')
+        
+        detailed_error = f"stderr: '{stderr_msg}' | stdout: '{stdout_msg}'" if (stderr_msg or stdout_msg) else f"Exit code {e.returncode}"
+        logger.error(f"GitHub push failed. Git error -> {detailed_error}")
     except FileNotFoundError:
         logger.error("Git command not found. Ensure git is installed and in the PATH.")
 
