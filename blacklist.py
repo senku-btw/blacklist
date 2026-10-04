@@ -295,28 +295,29 @@ def reload_ftl_engine() -> None:
         logger.error("Docker command not found.")
 
 def push_to_github() -> None:
-    """Automates committing and pushing generated lists to GitHub securely with robust error diagnostics."""
+    """Automates committing and pushing generated lists to GitHub securely."""
     logger.info("Starting GitHub Repository Backup...")
     
-    commit_msg = secrets.token_hex(4)
-    logger.info(f"Generated secure commit message: {commit_msg}")
+    expected_files = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
+    files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
     
+    if not files_to_add:
+        logger.info("No target text files currently exist to commit.")
+        return
+
     try:
+        # Check git status specifically for our target blocklist files (ignoring untracked extras like requirements.txt)
         status = subprocess.run(
-            ["git", "status", "--porcelain"], 
+            ["git", "status", "--porcelain"] + files_to_add, 
             cwd=SCRIPT_DIR, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
         )
         
         if not status.stdout.strip():
-            logger.info("No changes detected in repository. Skipping GitHub push.")
+            logger.info("No changes detected in target list files. Skipping GitHub push.")
             return
 
-        expected_files = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
-        files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
-        
-        if not files_to_add:
-            logger.info("No target text files currently exist to commit.")
-            return
+        commit_msg = secrets.token_hex(4)
+        logger.info(f"Generated secure commit message: {commit_msg}")
 
         subprocess.run(["git", "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
         subprocess.run(["git", "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
@@ -327,10 +328,8 @@ def push_to_github() -> None:
     except subprocess.TimeoutExpired:
         logger.error(f"Git command timed out after {CMD_TIMEOUT} seconds.")
     except subprocess.CalledProcessError as e:
-        # Capture both stdout and stderr to diagnose exact git failure
         stdout_msg = e.stdout.decode('utf-8', errors='ignore').strip() if isinstance(e.stdout, bytes) else str(e.stdout or '')
         stderr_msg = e.stderr.decode('utf-8', errors='ignore').strip() if isinstance(e.stderr, bytes) else str(e.stderr or '')
-        
         detailed_error = f"stderr: '{stderr_msg}' | stdout: '{stdout_msg}'" if (stderr_msg or stdout_msg) else f"Exit code {e.returncode}"
         logger.error(f"GitHub push failed. Git error -> {detailed_error}")
     except FileNotFoundError:
