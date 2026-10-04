@@ -21,4 +21,3 @@ https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Spam/hosts
 https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/AmazonFireTV.txt
 https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/android-tracking.txt
 https://raw.githubusercontent.com/hl2guide/Filterlist-for-AdGuard-or-PiHole/refs/heads/master/dns_disallowed_domains.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/test.txt
