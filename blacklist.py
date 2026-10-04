@@ -318,21 +318,22 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
 # --- SYSTEM INTEGRATIONS ---
 
 def reload_ftl_engine() -> None:
-    logger.info("Reloading Pi-hole FTL Engine...")
+    logger.info("Running Pi-hole Gravity Update to apply database changes...")
     if not os.path.exists(DOCKER_BIN):
-        logger.error("Docker binary not found. Cannot reload FTL engine.")
+        logger.error("Docker binary not found. Cannot run gravity update.")
         return
 
     try:
+        # Changed from 'restartdns reload-lists' to '-g' to rebuild gravity
         subprocess.run(
-            [DOCKER_BIN, "exec", "pihole", "pihole", "restartdns", "reload-lists"],
-            capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
+            [DOCKER_BIN, "exec", "pihole", "pihole", "-g"],
+            capture_output=True, text=True, check=True, timeout=300 # Increased timeout for gravity run
         )
-        logger.info("FTL Engine reloaded successfully.")
+        logger.info("Gravity updated and FTL Engine reloaded successfully.")
     except subprocess.TimeoutExpired:
-        logger.error("Timeout while reloading FTL engine.")
+        logger.error("Timeout while running gravity update.")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to reload FTL engine. stdout: {e.stdout.strip()} | stderr: {e.stderr.strip()}")
+        logger.error(f"Failed to run gravity update. stdout: {e.stdout.strip()} | stderr: {e.stderr.strip()}")
 
 def push_to_github() -> None:
     logger.info("Starting GitHub Repository Backup...")
