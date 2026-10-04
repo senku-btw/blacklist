@@ -10,7 +10,6 @@ import logging
 import subprocess
 import os
 import secrets
-import shutil
 import fcntl
 from pathlib import Path
 from typing import FrozenSet, List
@@ -60,19 +59,6 @@ def acquire_exclusive_lock():
     except BlockingIOError:
         logger.critical("Another instance of the script is currently running. Exiting to prevent corruption.")
         exit(1)
-
-def backup_database():
-    """Creates a pre-execution snapshot of the database."""
-    if not DB_PATH.exists():
-        raise FileNotFoundError(f"Gravity database not found at {DB_PATH}")
-    
-    backup_path = DB_PATH.with_suffix('.db.bak')
-    try:
-        shutil.copy2(DB_PATH, backup_path)
-        logger.info(f"Database pre-execution backup secured at {backup_path.name}")
-    except IOError as e:
-        logger.error(f"Failed to create database backup: {e}")
-        raise
 
 def get_db_connection() -> sqlite3.Connection:
     """Establish a secure SQLite3 connection with lock-wait timeouts."""
@@ -348,8 +334,6 @@ def main():
     lock_fd = acquire_exclusive_lock()
     
     try:
-        backup_database()
-        
         with closing(get_db_connection()) as conn, closing(get_http_session()) as http_session:
             step1_migrate_exact_blacklists(conn)
             step2_prune_empty_adlists(conn, http_session)
