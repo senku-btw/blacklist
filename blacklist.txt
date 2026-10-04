@@ -3164,6 +3164,7 @@ s.moatads.com
 s.pinimg.com
 s.send.microad.jp
 s.skimresources.com
+s.youtube.com
 s.zkcdn.net
 s0.doubleclick.net
 s1.2mdn.net
