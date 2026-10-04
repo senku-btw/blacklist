@@ -319,41 +319,40 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
 
 def reload_ftl_engine(container_name: str = "pihole") -> None:
     """
-    Reloads FTL and forces the dashboard counters to sync with gravity.db
-    without running any pihole -g commands.
+    Forces the Pi-hole dashboard to update by destroying FTL's shared memory 
+    and killing the process. The container's supervisor (s6) will instantly 
+    restart FTL, forcing it to read the modified gravity.db from scratch.
     """
-    logger.info("Reloading Pi-hole FTL Engine...")
+    logger.info("Forcing FTL cold-restart to rebuild shared memory counters...")
     if not os.path.exists(DOCKER_BIN):
         logger.error("Docker binary not found. Cannot reload FTL engine.")
         return
 
-    # Strategy 1: Direct FTL process restart via supervisor/pkill
-    # Force-restarts FTL inside the container so it drops /dev/shm and reads gravity.db clean on startup.
-    reload_commands = [
-        # Try graceful process restart via pihole service wrapper
-        [DOCKER_BIN, "exec", container_name, "pihole", "restartdns"],
-        # Direct SIGTERM to pihole-FTL forcing a fresh process launch & DB load
-        [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"],
-    ]
+    # Step 1: Nuke the shared memory files so FTL cannot resume its old state
+    nuke_shm_cmd = [DOCKER_BIN, "exec", container_name, "sh", "-c", "rm -f /dev/shm/FTL-*"]
+    
+    # Step 2: Terminate the FTL process (the container's supervisor will restart it automatically)
+    kill_ftl_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"]
 
-    for cmd in reload_commands:
-        cmd_str = " ".join(cmd[2:])
-        try:
-            logger.info(f"Executing FTL reload strategy: {cmd_str}")
-            subprocess.run(
-                cmd,
-                capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
-            )
-            logger.info(f"Executed '{cmd_str}' successfully.")
-            return
-        except subprocess.CalledProcessError as e:
-            stdout_msg = e.stdout.strip() if e.stdout else ""
-            stderr_msg = e.stderr.strip() if e.stderr else ""
-            logger.warning(f"Strategy '{cmd_str}' failed: stdout='{stdout_msg}' | stderr='{stderr_msg}'")
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Strategy '{cmd_str}' timed out.")
-
-    logger.error("All non-gravity FTL reload strategies failed.")
+    try:
+        # Wipe memory
+        logger.info(f"Executing: {' '.join(nuke_shm_cmd)}")
+        subprocess.run(nuke_shm_cmd, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT)
+        
+        # Kill process
+        logger.info(f"Executing: {' '.join(kill_ftl_cmd)}")
+        subprocess.run(kill_ftl_cmd, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT)
+        
+        logger.info("FTL memory wiped and process restarted. Dashboard will now reflect gravity.db.")
+    except subprocess.CalledProcessError as e:
+        # pkill returns 1 if no process was found (e.g., if it was already restarting)
+        if "pkill" in e.cmd and e.returncode == 1:
+            logger.info("pihole-FTL process was already stopped or restarting.")
+        else:
+            stderr_msg = e.stderr.strip() if e.stderr else "Unknown error"
+            logger.warning(f"FTL cold-restart encountered an issue: {stderr_msg}")
+    except subprocess.TimeoutExpired as e:
+        logger.warning(f"Command timed out: {' '.join(e.cmd)}")
 
 def force_ftl_restart(container_name: str = "pihole") -> None:
     """Restarts the FTL process inside the container to force a full DB re-read."""
