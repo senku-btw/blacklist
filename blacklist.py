@@ -204,7 +204,7 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
 
     cursor.execute(
         """
-        SELECT d.id, d.domain 
+        SELECT d.id, d.domain
         FROM domainlist d
         LEFT JOIN domainlist_by_group dbg ON d.id = dbg.domainlist_id
         WHERE d.type = 1
@@ -337,7 +337,7 @@ def step3_extract_minor_lists(
 
     cursor.execute(
         """
-        SELECT a.id, a.address 
+        SELECT a.id, a.address
         FROM adlist a
         JOIN adlist_by_group abg ON a.id = abg.adlist_id
         WHERE abg.group_id = 0 AND a.number BETWEEN 1 AND 100
