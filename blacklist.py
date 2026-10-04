@@ -96,9 +96,10 @@ def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
 def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     """
     Extracts specific exact blacklist entries from gravity.db, validates them,
-    merges them with a local blacklist.txt, and removes them from the DB.
+    merges them with local blacklist.txt, and removes migrated entries from DB.
+    Always processes, sanitizes, and deduplicates blacklist.txt on every execution.
     """
-    logger.info("Starting Step 1: Exact Blacklist Migration")
+    logger.info("Starting Step 1: Exact Blacklist Migration & Maintenance")
     cursor = conn.cursor()
     
     query = """
@@ -115,45 +116,40 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     cursor.execute(query)
     rows = cursor.fetchall()
     
-    if not rows:
-        logger.info("No matching blacklist entries found in database.")
-        return
-
     db_frozenset_items = set()
     db_ids_to_delete = []
 
-    # Validate each row individually to ensure we only delete what we migrate
-    for row in rows:
-        domain = row['domain']
-        row_id = row['id']
-        
-        # Test if the domain passes our strict sanitization
-        sanitized = sanitize_and_extract_domains([domain])
-        
-        if sanitized:
-            db_frozenset_items.update(sanitized)
-            db_ids_to_delete.append(row_id)
-        else:
-            logger.warning(f"Domain '{domain}' (ID: {row_id}) failed regex validation. Skipping migration and keeping in DB.")
-    
-    if not db_ids_to_delete:
-        logger.info("No valid entries passed sanitization. Nothing to migrate.")
-        return
+    if rows:
+        for row in rows:
+            domain = row['domain']
+            row_id = row['id']
+            
+            sanitized = sanitize_and_extract_domains([domain])
+            
+            if sanitized:
+                db_frozenset_items.update(sanitized)
+                db_ids_to_delete.append(row_id)
+            else:
+                logger.warning(f"Domain '{domain}' (ID: {row_id}) failed regex validation. Keeping in DB.")
+    else:
+        logger.info("No matching blacklist entries found in database.")
 
+    # ALWAYS load, deduplicate, and rewrite blacklist.txt even if DB yielded 0 rows
     db_frozenset = frozenset(db_frozenset_items)
     local_frozenset = load_local_file_to_frozenset(BLACKLIST_FILE)
     
     merged_frozenset = frozenset(db_frozenset | local_frozenset)
     write_frozenset_to_file(merged_frozenset, BLACKLIST_FILE)
     
-    try:
-        cursor.execute(f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
-        cursor.execute(f"DELETE FROM domainlist WHERE id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
-        conn.commit()
-        logger.info(f"Deleted {len(db_ids_to_delete)} migrated entries from database.")
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Failed to delete entries from DB: {e}")
+    if db_ids_to_delete:
+        try:
+            cursor.execute(f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
+            cursor.execute(f"DELETE FROM domainlist WHERE id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
+            conn.commit()
+            logger.info(f"Deleted {len(db_ids_to_delete)} migrated entries from database.")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to delete entries from DB: {e}")
 
 # --- STEP 2: EMPTY ADLIST PRUNING ---
 
