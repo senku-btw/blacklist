@@ -17,7 +17,7 @@ import sys
 import tempfile
 from contextlib import closing
 from pathlib import Path
-from typing import FrozenSet, List, Optional
+from typing import FrozenSet, List, Optional, Set
 
 import requests  # pylint: disable=import-error
 from requests.adapters import HTTPAdapter  # pylint: disable=import-error
@@ -142,7 +142,7 @@ def get_http_session() -> requests.Session:
 
 def sanitize_and_extract_domains(raw_data: List[str]) -> FrozenSet[str]:
     """Applies multi-step sanitization and strictly validates domains."""
-    valid_domains = set()
+    valid_domains: Set[str] = set()
     for line in raw_data:
         line = line.strip()
         if not line or line.startswith(("#", "!", "/", "<")):
@@ -217,8 +217,8 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     )
     rows = cursor.fetchall()
 
-    db_frozenset_items = set()
-    db_ids_to_delete = []
+    db_frozenset_items: Set[str] = set()
+    db_ids_to_delete: List[int] = []
 
     for row in rows:
         domain = row["domain"]
@@ -282,7 +282,7 @@ def step2_prune_empty_adlists(
         logger.info("No adlists with 0 entries found in database.")
         return
 
-    ids_to_delete = []
+    ids_to_delete: List[int] = []
     for row in suspect_lists:
         adlist_id, url = row["id"], row["address"]
         if fetch_and_validate_adlist(url, session):
@@ -312,7 +312,7 @@ def step2_prune_empty_adlists(
 
 def _append_minor_urls(urls: List[str]) -> None:
     """Appends new minor list URLs to the tracking file."""
-    existing_urls = set()
+    existing_urls: Set[str] = set()
     if MINOR_LISTS_FILE.exists():
         with open(MINOR_LISTS_FILE, "r", encoding="utf-8") as f:
             existing_urls = set(f.read().splitlines())
@@ -354,7 +354,7 @@ def step3_extract_minor_lists(
 
     _append_minor_urls(urls)
 
-    all_extracted_domains = set()
+    all_extracted_domains: Set[str] = set()
     for url in urls:
         try:
             resp = session.get(url, timeout=15)
