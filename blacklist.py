@@ -318,54 +318,34 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
 # --- SYSTEM INTEGRATIONS ---
 
 def reload_ftl_engine(container_name: str = "pihole") -> None:
-    """
-    Reloads the Pi-hole FTL DNS engine safely and robustly without a full gravity rebuild.
-    Executes 'pihole restartdns' to force FTL to reconnect to gravity.db and refresh dashboard counters.
-    """
     logger.info("Reloading Pi-hole FTL Engine...")
     if not os.path.exists(DOCKER_BIN):
         logger.error("Docker binary not found. Cannot reload FTL engine.")
         return
 
-    # 1. Pre-flight check: Verify container exists and is running
-    try:
-        inspect_proc = subprocess.run(
-            [DOCKER_BIN, "inspect", "-f", "{{.State.Running}}", container_name],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-        if inspect_proc.stdout.strip().lower() != "true":
-            logger.error(f"Container '{container_name}' is not currently running.")
-            return
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
-        logger.error(f"Failed to inspect Docker container '{container_name}': {e}")
-        return
-
-    # 2. Execution sequence with primary and fallback commands
-    # Note: 'restartdns' (without reload-lists) forces FTL to re-read gravity.db row counts.
+    # Command sequence to force FTL to drop in-memory stats and pull from SQLite
     reload_commands = [
+        # 1. Instruct FTL to reload database lists and recreate shared memory structures
+        [DOCKER_BIN, "exec", container_name, "pihole-FTL", "sqlite3", "/etc/pihole/gravity.db", "SELECT flush_gravity();"],
+        # 2. Force Pi-hole DNS restart to apply changes across the web dashboard
         [DOCKER_BIN, "exec", container_name, "pihole", "restartdns"],
-        [DOCKER_BIN, "exec", container_name, "pihole", "restartdns", "reload-lists"],
-        [DOCKER_BIN, "exec", container_name, "pkill", "-HUP", "pihole-FTL"]
     ]
 
     for cmd in reload_commands:
         cmd_str = " ".join(cmd[2:])
         try:
-            logger.info(f"Attempting reload via: {cmd_str}")
-            result = subprocess.run(
+            logger.info(f"Executing FTL cache update: {cmd_str}")
+            subprocess.run(
                 cmd,
                 capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
             )
-            logger.info(f"FTL Engine reloaded successfully via '{cmd_str}'.")
-            return
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Command timed out: '{cmd_str}'")
+            logger.info(f"Executed '{cmd_str}' successfully.")
         except subprocess.CalledProcessError as e:
             stdout_msg = e.stdout.strip() if e.stdout else ""
             stderr_msg = e.stderr.strip() if e.stderr else ""
-            logger.warning(f"Reload strategy failed ('{cmd_str}'): stdout='{stdout_msg}' | stderr='{stderr_msg}'")
-
-    logger.error("All FTL reload strategies failed.")
+            logger.warning(f"Command '{cmd_str}' failed: stdout='{stdout_msg}' | stderr='{stderr_msg}'")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Command timed out: '{cmd_str}'")
 
 def push_to_github() -> None:
     logger.info("Starting GitHub Repository Backup...")
