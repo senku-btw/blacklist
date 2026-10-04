@@ -101,16 +101,15 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 1: Exact Blacklist Migration")
     cursor = conn.cursor()
     
-    # Query logic addressing a, b, and c conditions
     query = """
         SELECT d.id, d.domain 
         FROM domainlist d
         LEFT JOIN domainlist_by_group dbg ON d.id = dbg.domainlist_id
         WHERE d.type = 1 -- Exact blacklist
         AND (
-            (dbg.group_id IS NULL AND (d.comment IS NULL OR d.comment = '')) -- a
-            OR dbg.group_id = 0 -- b
-            OR (dbg.group_id IS NOT NULL AND (d.comment IS NULL OR d.comment = '')) -- c
+            (dbg.group_id IS NULL AND (d.comment IS NULL OR d.comment = ''))
+            OR dbg.group_id = 0
+            OR (dbg.group_id IS NOT NULL AND (d.comment IS NULL OR d.comment = ''))
         )
     """
     cursor.execute(query)
@@ -120,22 +119,33 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
         logger.info("No matching blacklist entries found in database.")
         return
 
-    db_domains_raw = [row['domain'] for row in rows]
-    db_ids_to_delete = [row['id'] for row in rows]
+    db_frozenset_items = set()
+    db_ids_to_delete = []
+
+    # Validate each row individually to ensure we only delete what we migrate
+    for row in rows:
+        domain = row['domain']
+        row_id = row['id']
+        
+        # Test if the domain passes our strict sanitization
+        sanitized = sanitize_and_extract_domains([domain])
+        
+        if sanitized:
+            db_frozenset_items.update(sanitized)
+            db_ids_to_delete.append(row_id)
+        else:
+            logger.warning(f"Domain '{domain}' (ID: {row_id}) failed regex validation. Skipping migration and keeping in DB.")
     
-    # Process DB entries into immutable structure
-    db_frozenset = sanitize_and_extract_domains(db_domains_raw)
-    
-    # Process local file into immutable structure
+    if not db_ids_to_delete:
+        logger.info("No valid entries passed sanitization. Nothing to migrate.")
+        return
+
+    db_frozenset = frozenset(db_frozenset_items)
     local_frozenset = load_local_file_to_frozenset(BLACKLIST_FILE)
     
-    # Concatenate into a new unique immutable object
     merged_frozenset = frozenset(db_frozenset | local_frozenset)
-    
-    # Write to disk
     write_frozenset_to_file(merged_frozenset, BLACKLIST_FILE)
     
-    # Delete processed entries from DB
     try:
         cursor.execute(f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
         cursor.execute(f"DELETE FROM domainlist WHERE id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
