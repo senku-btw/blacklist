@@ -9,6 +9,7 @@ import re
 import logging
 import subprocess
 import requests
+import secrets
 from pathlib import Path
 from typing import FrozenSet, Tuple, List, Optional
 
@@ -52,15 +53,11 @@ def sanitize_and_extract_domains(raw_data: List[str]) -> FrozenSet[str]:
     valid_domains = set()
     for line in raw_data:
         line = line.strip()
-        # Drop comments and empty lines
         if not line or line.startswith(('#', '!', '/', '<')):
             continue
         
-        # Handle hosts file format (e.g., "0.0.0.0 domain.com")
         parts = line.split()
         candidate = parts[-1] if parts else ""
-        
-        # Clean potential URL artifacts or trailing characters
         candidate = candidate.lower().strip('.').split('#')[0].split('^')[0]
         
         if DOMAIN_REGEX.match(candidate):
@@ -106,7 +103,7 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
         SELECT d.id, d.domain 
         FROM domainlist d
         LEFT JOIN domainlist_by_group dbg ON d.id = dbg.domainlist_id
-        WHERE d.type = 1 -- Exact blacklist
+        WHERE d.type = 1
         AND (
             (dbg.group_id IS NULL AND (d.comment IS NULL OR d.comment = ''))
             OR dbg.group_id = 0
@@ -134,7 +131,6 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     else:
         logger.info("No matching blacklist entries found in database.")
 
-    # ALWAYS load, deduplicate, and rewrite blacklist.txt even if DB yielded 0 rows
     db_frozenset = frozenset(db_frozenset_items)
     local_frozenset = load_local_file_to_frozenset(BLACKLIST_FILE)
     
@@ -217,7 +213,6 @@ def step3_extract_minor_lists(conn: sqlite3.Connection) -> None:
 
     urls = [row['address'] for row in minor_lists]
     
-    # Save URLs to minor_lists.txt
     existing_urls = set()
     if MINOR_LISTS_FILE.exists():
         with open(MINOR_LISTS_FILE, 'r') as f:
@@ -229,7 +224,6 @@ def step3_extract_minor_lists(conn: sqlite3.Connection) -> None:
                 f.write(f"{url}\n")
     logger.info(f"Stored/Updated minor list URLs in {MINOR_LISTS_FILE.name}")
 
-    # Process all minor lists cumulatively
     all_extracted_domains = set()
     for url in urls:
         try:
@@ -243,7 +237,6 @@ def step3_extract_minor_lists(conn: sqlite3.Connection) -> None:
     new_frozenset = frozenset(all_extracted_domains)
     existing_frozenset = load_local_file_to_frozenset(EXTRA_BLACKLIST_FILE)
     
-    # Combine and create the immutable cumulative set
     cumulative_frozenset = frozenset(new_frozenset | existing_frozenset)
     write_frozenset_to_file(cumulative_frozenset, EXTRA_BLACKLIST_FILE)
 
@@ -253,17 +246,54 @@ def reload_ftl_engine() -> None:
     """Triggers the Pi-hole FTL reload via the Docker daemon."""
     logger.info("Reloading Pi-hole FTL Engine...")
     try:
-        # reload-lists forces Pi-hole to re-read gravity.db and custom list files
         result = subprocess.run(
             ["docker", "exec", "pihole", "pihole", "restartdns", "reload-lists"],
             capture_output=True, text=True, check=True
         )
-        logger.info("FTL Engine reloaded successfully. Dashboard changes applied.")
-        logger.debug(f"Docker output: {result.stdout.strip()}")
+        logger.info("FTL Engine reloaded successfully.")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to reload FTL engine via Docker. Error: {e.stderr.strip()}")
+        logger.error(f"Failed to reload FTL engine. Error: {e.stderr.strip()}")
     except FileNotFoundError:
-        logger.error("Docker command not found. Ensure the script has permissions to run docker commands.")
+        logger.error("Docker command not found.")
+
+# --- GIT AUTOMATION ---
+
+def push_to_github() -> None:
+    """Automates committing and pushing generated lists to GitHub securely."""
+    logger.info("Starting GitHub Repository Backup...")
+    
+    # Generate 8 random hex digits (4 bytes)
+    commit_msg = secrets.token_hex(4)
+    logger.info(f"Generated secure commit message: {commit_msg}")
+    
+    try:
+        # Check if there are any changes to tracked files
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], 
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=True
+        )
+        
+        if not status.stdout.strip():
+            logger.info("No changes detected in repository. Skipping GitHub push.")
+            return
+
+        # 1. Stage the text files explicitly to avoid committing gravity.db accidentally
+        files_to_add = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
+        subprocess.run(["git", "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True)
+        
+        # 2. Commit the changes
+        subprocess.run(["git", "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True)
+        
+        # 3. Push to remote (requires SSH keys or credentials to be pre-configured)
+        subprocess.run(["git", "push"], cwd=SCRIPT_DIR, check=True, capture_output=True)
+        
+        logger.info(f"Successfully pushed updates to GitHub with commit: {commit_msg}")
+        
+    except subprocess.CalledProcessError as e:
+        error_output = e.stderr.strip() if e.stderr else getattr(e, 'output', 'Unknown Git Error')
+        logger.error(f"GitHub push failed. Git error: {error_output}")
+    except FileNotFoundError:
+        logger.error("Git command not found. Ensure git is installed and in the PATH.")
 
 # --- ORCHESTRATION ---
 
@@ -284,6 +314,7 @@ def main():
         logger.info("Database connection closed securely.")
 
     reload_ftl_engine()
+    push_to_github()
     logger.info("All tasks completed.")
 
 if __name__ == "__main__":
