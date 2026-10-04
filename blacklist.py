@@ -1,31 +1,39 @@
 #!/usr/bin/env python3
 """
 Pi-hole Gravity Database Manager & Blacklist Migrator
-Designed for Python 3.8+
+Production-Grade Release
 """
 
 import sqlite3
 import re
 import logging
 import subprocess
-import requests
+import os
 import secrets
 from pathlib import Path
-from typing import FrozenSet, Tuple, List, Optional
+from typing import FrozenSet, List
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # --- CONFIGURATION ---
-DB_PATH = Path("/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db")
+# Use environment variables as overrides for containerized execution flexibility
+DB_PATH = Path(os.getenv("PIHOLE_DB_PATH", "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"))
 SCRIPT_DIR = Path(__file__).parent.resolve()
 
 BLACKLIST_FILE = SCRIPT_DIR / "blacklist.txt"
 MINOR_LISTS_FILE = SCRIPT_DIR / "minor_lists.txt"
 EXTRA_BLACKLIST_FILE = SCRIPT_DIR / "blacklist-extra.txt"
 
+# Subprocess timeout (seconds) to prevent permanent hanging
+CMD_TIMEOUT = 30
+
 # Domain validation Regex (RFC 1035/1123 compliant)
 DOMAIN_REGEX = re.compile(
-    r'^(?:[a-zA-Z0-9]'                # First character
-    r'(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+' # Sub domain + hostname
-    r'[a-zA-Z]{2,63}$'                # TLD
+    r'^(?:[a-zA-Z0-9]'
+    r'(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+'
+    r'[a-zA-Z]{2,63}$'
 )
 
 logging.basicConfig(
@@ -34,22 +42,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- UTILITY FUNCTIONS ---
+# --- INFRASTRUCTURE & UTILITY FUNCTIONS ---
 
 def get_db_connection() -> sqlite3.Connection:
-    """Establish and return a secure SQLite3 connection."""
+    """Establish a secure SQLite3 connection with lock-wait timeouts."""
     if not DB_PATH.exists():
         raise FileNotFoundError(f"Gravity database not found at {DB_PATH}")
-    conn = sqlite3.connect(DB_PATH)
+    # timeout=30.0 allows script to wait gracefully if Pi-hole is actively updating gravity
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # Enable Write-Ahead Logging optimization if supported
+    conn.execute("PRAGMA journal_mode=WAL;") 
     return conn
 
+def get_http_session() -> requests.Session:
+    """Creates an HTTP session with exponential backoff for resilience against transient network failures."""
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
 def sanitize_and_extract_domains(raw_data: List[str]) -> FrozenSet[str]:
-    """
-    Applies multi-step sanitization to a list of raw string entries.
-    Strips hosts file prefixes (0.0.0.0, 127.0.0.1), ignores comments,
-    and returns a frozenset of strictly valid domains.
-    """
+    """Applies multi-step sanitization and returns a frozenset of strictly valid domains."""
     valid_domains = set()
     for line in raw_data:
         line = line.strip()
@@ -66,36 +87,41 @@ def sanitize_and_extract_domains(raw_data: List[str]) -> FrozenSet[str]:
     return frozenset(valid_domains)
 
 def load_local_file_to_frozenset(filepath: Path) -> FrozenSet[str]:
-    """Reads a local file and returns sanitized entries as a frozenset."""
+    """Reads a local file safely and returns sanitized entries."""
     if not filepath.exists():
         return frozenset()
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             return sanitize_and_extract_domains(f.readlines())
-    except Exception as e:
-        logger.error(f"Failed to read {filepath}: {e}")
+    except IOError as e:
+        logger.error(f"Failed to read {filepath.name}: {e}")
         return frozenset()
 
 def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
-    """Alphabetically sorts a frozenset and writes to a file."""
+    """
+    Writes data using an atomic rename operation.
+    Guarantees the file is never left empty or corrupted if the script crashes mid-write.
+    """
+    sorted_domains = sorted(domains)
+    temp_filepath = filepath.with_suffix('.tmp')
+    
     try:
-        sorted_domains = sorted(domains)
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(temp_filepath, 'w', encoding='utf-8') as f:
             for domain in sorted_domains:
                 f.write(f"{domain}\n")
+        
+        # Atomic replace operation (POSIX compliant)
+        temp_filepath.replace(filepath)
         logger.info(f"Successfully saved {len(sorted_domains)} entries to {filepath.name}")
-    except Exception as e:
-        logger.error(f"Failed to write to {filepath}: {e}")
+    except IOError as e:
+        logger.error(f"Failed to write to {filepath.name}: {e}")
+        if temp_filepath.exists():
+            temp_filepath.unlink(missing_ok=True)
         raise
 
-# --- STEP 1: BLACKLIST MIGRATION ---
+# --- CORE LOGIC STEPS ---
 
 def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
-    """
-    Extracts specific exact blacklist entries from gravity.db, validates them,
-    merges them with local blacklist.txt, and removes migrated entries from DB.
-    Always processes, sanitizes, and deduplicates blacklist.txt on every execution.
-    """
     logger.info("Starting Step 1: Exact Blacklist Migration & Maintenance")
     cursor = conn.cursor()
     
@@ -143,25 +169,21 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
             cursor.execute(f"DELETE FROM domainlist WHERE id IN ({','.join('?'*len(db_ids_to_delete))})", db_ids_to_delete)
             conn.commit()
             logger.info(f"Deleted {len(db_ids_to_delete)} migrated entries from database.")
-        except Exception as e:
+        except sqlite3.Error as e:
             conn.rollback()
             logger.error(f"Failed to delete entries from DB: {e}")
 
-# --- STEP 2: EMPTY ADLIST PRUNING ---
-
-def fetch_and_validate_adlist(url: str) -> bool:
-    """Downloads an adlist and strictly verifies if it contains 0 valid domains."""
+def fetch_and_validate_adlist(url: str, session: requests.Session) -> bool:
     try:
-        response = requests.get(url, timeout=15)
+        response = session.get(url, timeout=15)
         response.raise_for_status()
         domains = sanitize_and_extract_domains(response.text.splitlines())
         return len(domains) == 0
     except requests.RequestException as e:
-        logger.warning(f"Failed to fetch adlist {url}: {e}. Skipping deletion to be safe.")
+        logger.warning(f"Failed to fetch adlist {url} after retries: {e}. Skipping deletion.")
         return False
 
-def step2_prune_empty_adlists(conn: sqlite3.Connection) -> None:
-    """Finds adlists with 0 entries, verifies they are empty online, and deletes them."""
+def step2_prune_empty_adlists(conn: sqlite3.Connection, session: requests.Session) -> None:
     logger.info("Starting Step 2: Empty Adlist Pruning")
     cursor = conn.cursor()
     
@@ -177,7 +199,7 @@ def step2_prune_empty_adlists(conn: sqlite3.Connection) -> None:
         adlist_id, url = row['id'], row['address']
         logger.info(f"Verifying potentially empty adlist: {url}")
         
-        if fetch_and_validate_adlist(url):
+        if fetch_and_validate_adlist(url, session):
             logger.info(f"Verified {url} is completely empty.")
             ids_to_delete.append(adlist_id)
 
@@ -187,14 +209,11 @@ def step2_prune_empty_adlists(conn: sqlite3.Connection) -> None:
             cursor.execute(f"DELETE FROM adlist WHERE id IN ({','.join('?'*len(ids_to_delete))})", ids_to_delete)
             conn.commit()
             logger.info(f"Safely purged {len(ids_to_delete)} verified empty adlists from database.")
-        except Exception as e:
+        except sqlite3.Error as e:
             conn.rollback()
             logger.error(f"Database deletion failed for adlists: {e}")
 
-# --- STEP 3: MINOR LIST EXTRACTION ---
-
-def step3_extract_minor_lists(conn: sqlite3.Connection) -> None:
-    """Finds default-group adlists with 1-100 entries, saves them to a unified list, and extracts domains."""
+def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Session) -> None:
     logger.info("Starting Step 3: Minor List Extraction")
     cursor = conn.cursor()
     
@@ -215,24 +234,30 @@ def step3_extract_minor_lists(conn: sqlite3.Connection) -> None:
     
     existing_urls = set()
     if MINOR_LISTS_FILE.exists():
-        with open(MINOR_LISTS_FILE, 'r') as f:
-            existing_urls = set(f.read().splitlines())
+        try:
+            with open(MINOR_LISTS_FILE, 'r', encoding='utf-8') as f:
+                existing_urls = set(f.read().splitlines())
+        except IOError as e:
+            logger.warning(f"Could not read {MINOR_LISTS_FILE.name}: {e}")
     
-    with open(MINOR_LISTS_FILE, 'a') as f:
-        for url in urls:
-            if url not in existing_urls:
-                f.write(f"{url}\n")
-    logger.info(f"Stored/Updated minor list URLs in {MINOR_LISTS_FILE.name}")
+    try:
+        with open(MINOR_LISTS_FILE, 'a', encoding='utf-8') as f:
+            for url in urls:
+                if url not in existing_urls:
+                    f.write(f"{url}\n")
+        logger.info(f"Stored/Updated minor list URLs in {MINOR_LISTS_FILE.name}")
+    except IOError as e:
+        logger.error(f"Failed to append to {MINOR_LISTS_FILE.name}: {e}")
 
     all_extracted_domains = set()
     for url in urls:
         try:
-            resp = requests.get(url, timeout=10)
+            resp = session.get(url, timeout=15)
             resp.raise_for_status()
             extracted = sanitize_and_extract_domains(resp.text.splitlines())
             all_extracted_domains.update(extracted)
-        except requests.RequestException:
-            logger.warning(f"Could not fetch domains from minor list: {url}")
+        except requests.RequestException as e:
+            logger.warning(f"Could not fetch domains from minor list {url}: {e}")
 
     new_frozenset = frozenset(all_extracted_domains)
     existing_frozenset = load_local_file_to_frozenset(EXTRA_BLACKLIST_FILE)
@@ -240,44 +265,39 @@ def step3_extract_minor_lists(conn: sqlite3.Connection) -> None:
     cumulative_frozenset = frozenset(new_frozenset | existing_frozenset)
     write_frozenset_to_file(cumulative_frozenset, EXTRA_BLACKLIST_FILE)
 
-# --- FINAL STEP: DOCKER RELOAD ---
+# --- SYSTEM INTEGRATIONS ---
 
 def reload_ftl_engine() -> None:
-    """Triggers the Pi-hole FTL reload via the Docker daemon."""
     logger.info("Reloading Pi-hole FTL Engine...")
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["docker", "exec", "pihole", "pihole", "restartdns", "reload-lists"],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
         )
         logger.info("FTL Engine reloaded successfully.")
+    except subprocess.TimeoutExpired:
+        logger.error(f"Docker command timed out after {CMD_TIMEOUT} seconds.")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to reload FTL engine. Error: {e.stderr.strip()}")
     except FileNotFoundError:
         logger.error("Docker command not found.")
 
-# --- GIT AUTOMATION ---
-
 def push_to_github() -> None:
-    """Automates committing and pushing generated lists to GitHub securely."""
     logger.info("Starting GitHub Repository Backup...")
     
-    # Generate 8 random hex digits (4 bytes)
     commit_msg = secrets.token_hex(4)
     logger.info(f"Generated secure commit message: {commit_msg}")
     
     try:
-        # Check if there are any changes to tracked files
         status = subprocess.run(
             ["git", "status", "--porcelain"], 
-            cwd=SCRIPT_DIR, capture_output=True, text=True, check=True
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
         )
         
         if not status.stdout.strip():
             logger.info("No changes detected in repository. Skipping GitHub push.")
             return
 
-        # 1. Dynamically check which files actually exist before staging
         expected_files = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
         files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
         
@@ -285,25 +305,16 @@ def push_to_github() -> None:
             logger.info("No target text files currently exist to commit.")
             return
 
-        subprocess.run(["git", "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True)
-        
-        # 2. Commit the changes
-        subprocess.run(["git", "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True)
-        
-        # 3. Push to remote
-        subprocess.run(["git", "push"], cwd=SCRIPT_DIR, check=True, capture_output=True)
+        subprocess.run(["git", "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
+        subprocess.run(["git", "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
+        subprocess.run(["git", "push"], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
         
         logger.info(f"Successfully pushed updates to GitHub with commit: {commit_msg}")
         
+    except subprocess.TimeoutExpired:
+        logger.error(f"Git command timed out after {CMD_TIMEOUT} seconds.")
     except subprocess.CalledProcessError as e:
-        # Capture raw stderr if standard string conversion fails
-        error_output = ""
-        if e.stderr:
-            # Check if stderr is bytes, decode if necessary
-            error_output = e.stderr.decode('utf-8').strip() if isinstance(e.stderr, bytes) else e.stderr.strip()
-        else:
-            error_output = str(e)
-            
+        error_output = e.stderr.decode('utf-8').strip() if isinstance(e.stderr, bytes) else (e.stderr.strip() if e.stderr else str(e))
         logger.error(f"GitHub push failed. Git error: {error_output}")
     except FileNotFoundError:
         logger.error("Git command not found. Ensure git is installed and in the PATH.")
@@ -312,19 +323,24 @@ def push_to_github() -> None:
 
 def main():
     logger.info("Initiating Pi-hole Gravity Database Manager...")
+    
     try:
         conn = get_db_connection()
     except Exception as e:
         logger.critical(f"Database connection failed: {e}")
         return
 
-    try:
-        step1_migrate_exact_blacklists(conn)
-        step2_prune_empty_adlists(conn)
-        step3_extract_minor_lists(conn)
-    finally:
-        conn.close()
-        logger.info("Database connection closed securely.")
+    # Use a persistent HTTP session for connection pooling and backoff logic
+    with get_http_session() as http_session:
+        try:
+            step1_migrate_exact_blacklists(conn)
+            step2_prune_empty_adlists(conn, http_session)
+            step3_extract_minor_lists(conn, http_session)
+        except Exception as e:
+            logger.error(f"Unexpected error during execution pipeline: {e}", exc_info=True)
+        finally:
+            conn.close()
+            logger.info("Database connection closed securely.")
 
     reload_ftl_engine()
     push_to_github()
