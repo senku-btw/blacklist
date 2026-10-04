@@ -328,49 +328,33 @@ def reload_ftl_engine(container_name: str = "pihole") -> None:
         logger.error("Docker binary not found. Cannot reload FTL engine.")
         return
 
-    # Step 1: Nuke the shared memory files so FTL cannot resume its old state
+    # Commands
     nuke_shm_cmd = [DOCKER_BIN, "exec", container_name, "sh", "-c", "rm -f /dev/shm/FTL-*"]
-    
-    # Step 2: Terminate the FTL process (the container's supervisor will restart it automatically)
     kill_ftl_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"]
+    force_kill_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"]
 
     try:
-        # Wipe memory
-        logger.info(f"Executing: {' '.join(nuke_shm_cmd)}")
+        # Step 1: Wipe shared memory
+        logger.debug(f"Executing: {' '.join(nuke_shm_cmd)}")
         subprocess.run(nuke_shm_cmd, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT)
         
-        # Kill process
-        logger.info(f"Executing: {' '.join(kill_ftl_cmd)}")
+        # Step 2: Graceful kill (s6-overlay will automatically restart it)
+        logger.debug(f"Executing: {' '.join(kill_ftl_cmd)}")
         subprocess.run(kill_ftl_cmd, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT)
         
         logger.info("FTL memory wiped and process restarted. Dashboard will now reflect gravity.db.")
+        
     except subprocess.CalledProcessError as e:
-        # pkill returns 1 if no process was found (e.g., if it was already restarting)
         if "pkill" in e.cmd and e.returncode == 1:
-            logger.info("pihole-FTL process was already stopped or restarting.")
+            logger.info("Graceful kill returned 1 (already stopped/restarting). Attempting SIGKILL fallback...")
+            # Step 3 (Fallback): Aggressive kill if it hung
+            subprocess.run(force_kill_cmd, capture_output=True, text=True, check=False, timeout=10)
         else:
             stderr_msg = e.stderr.strip() if e.stderr else "Unknown error"
             logger.warning(f"FTL cold-restart encountered an issue: {stderr_msg}")
+            
     except subprocess.TimeoutExpired as e:
         logger.warning(f"Command timed out: {' '.join(e.cmd)}")
-
-def force_ftl_restart(container_name: str = "pihole") -> None:
-    """Restarts the FTL process inside the container to force a full DB re-read."""
-    logger.info("Restarting pihole-FTL process inside container...")
-    try:
-        subprocess.run(
-            [DOCKER_BIN, "exec", container_name, "supervisorctl", "restart", "pihole-FTL"],
-            capture_output=True, text=True, check=True, timeout=30
-        )
-        logger.info("pihole-FTL process restarted successfully.")
-    except subprocess.CalledProcessError:
-        # Fallback if supervisorctl is not used in your docker image variant
-        logger.info("supervisorctl failed, attempting direct killall on pihole-FTL...")
-        subprocess.run(
-            [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"],
-            capture_output=True, text=True, check=False, timeout=10
-        )
-
 
 def push_to_github() -> None:
     logger.info("Starting GitHub Repository Backup...")
