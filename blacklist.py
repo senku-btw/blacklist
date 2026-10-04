@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pi-hole Gravity Database Manager & Blacklist Migrator
-Production-Grade Release with Minor List Purging
+Enterprise-Grade Release
 """
 
 import sqlite3
@@ -10,54 +10,83 @@ import logging
 import subprocess
 import os
 import secrets
+import shutil
+import fcntl
 from pathlib import Path
 from typing import FrozenSet, List
+from contextlib import closing
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# --- CONFIGURATION ---
-DB_PATH = Path(os.getenv("PIHOLE_DB_PATH", "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"))
+# --- CONFIGURATION & PATHS ---
 SCRIPT_DIR = Path(__file__).parent.resolve()
+DB_PATH = Path(os.getenv("PIHOLE_DB_PATH", "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"))
 
 BLACKLIST_FILE = SCRIPT_DIR / "blacklist.txt"
 MINOR_LISTS_FILE = SCRIPT_DIR / "minor_lists.txt"
 EXTRA_BLACKLIST_FILE = SCRIPT_DIR / "blacklist-extra.txt"
 
-# Subprocess timeout (seconds) to prevent permanent hanging
-CMD_TIMEOUT = 30
+LOCK_FILE = SCRIPT_DIR / ".blacklist_manager.lock"
 
-# Domain validation Regex (RFC 1035/1123 compliant)
+CMD_TIMEOUT = 30
+FILE_PERMISSIONS = 0o644
+
 DOMAIN_REGEX = re.compile(
     r'^(?:[a-zA-Z0-9]'
     r'(?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+'
     r'[a-zA-Z]{2,63}$'
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - [%(funcName)s] %(message)s'
-)
+# --- LOGGING SETUP ---
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(funcName)s] %(message)s')
 
-# --- INFRASTRUCTURE & UTILITY FUNCTIONS ---
+# Console Handler
+ch = logging.StreamHandler()
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
+# --- INFRASTRUCTURE & SAFETY UTILITIES ---
+
+def acquire_exclusive_lock():
+    """Prevents overlapping executions which could corrupt the SQLite DB."""
+    try:
+        lock_fd = open(LOCK_FILE, 'w')
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd
+    except BlockingIOError:
+        logger.critical("Another instance of the script is currently running. Exiting to prevent corruption.")
+        exit(1)
+
+def backup_database():
+    """Creates a pre-execution snapshot of the database."""
+    if not DB_PATH.exists():
+        raise FileNotFoundError(f"Gravity database not found at {DB_PATH}")
+    
+    backup_path = DB_PATH.with_suffix('.db.bak')
+    try:
+        shutil.copy2(DB_PATH, backup_path)
+        logger.info(f"Database pre-execution backup secured at {backup_path.name}")
+    except IOError as e:
+        logger.error(f"Failed to create database backup: {e}")
+        raise
 
 def get_db_connection() -> sqlite3.Connection:
     """Establish a secure SQLite3 connection with lock-wait timeouts."""
-    if not DB_PATH.exists():
-        raise FileNotFoundError(f"Gravity database not found at {DB_PATH}")
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;") 
     return conn
 
 def get_http_session() -> requests.Session:
-    """Creates an HTTP session with exponential backoff for resilience."""
+    """Creates an HTTP session with exponential backoff."""
     session = requests.Session()
     retries = Retry(
-        total=3,
-        backoff_factor=1.5,
+        total=4,
+        backoff_factor=2,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET"]
     )
@@ -67,7 +96,7 @@ def get_http_session() -> requests.Session:
     return session
 
 def sanitize_and_extract_domains(raw_data: List[str]) -> FrozenSet[str]:
-    """Applies multi-step sanitization and returns a frozenset of strictly valid domains."""
+    """Applies multi-step sanitization and strictly validates domains."""
     valid_domains = set()
     for line in raw_data:
         line = line.strip()
@@ -83,8 +112,7 @@ def sanitize_and_extract_domains(raw_data: List[str]) -> FrozenSet[str]:
             
     return frozenset(valid_domains)
 
-def load_local_file_to_frozenset(filepath: Path) -> FrozenSet[str]:
-    """Reads a local file safely and returns sanitized entries."""
+def load_local_file(filepath: Path) -> FrozenSet[str]:
     if not filepath.exists():
         return frozenset()
     try:
@@ -95,7 +123,7 @@ def load_local_file_to_frozenset(filepath: Path) -> FrozenSet[str]:
         return frozenset()
 
 def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
-    """Writes data using an atomic rename operation."""
+    """Atomic write operation with strict permission enforcements."""
     sorted_domains = sorted(domains)
     temp_filepath = filepath.with_suffix('.tmp')
     
@@ -104,6 +132,8 @@ def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
             for domain in sorted_domains:
                 f.write(f"{domain}\n")
         
+        # Enforce secure file permissions before replacing
+        os.chmod(temp_filepath, FILE_PERMISSIONS)
         temp_filepath.replace(filepath)
         logger.info(f"Successfully saved {len(sorted_domains)} entries to {filepath.name}")
     except IOError as e:
@@ -115,7 +145,7 @@ def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
 # --- CORE LOGIC STEPS ---
 
 def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
-    logger.info("Starting Step 1: Exact Blacklist Migration & Maintenance")
+    logger.info("Starting Step 1: Exact Blacklist Migration")
     cursor = conn.cursor()
     
     query = """
@@ -135,25 +165,21 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     db_frozenset_items = set()
     db_ids_to_delete = []
 
-    if rows:
-        for row in rows:
-            domain = row['domain']
-            row_id = row['id']
-            
-            sanitized = sanitize_and_extract_domains([domain])
-            
-            if sanitized:
-                db_frozenset_items.update(sanitized)
-                db_ids_to_delete.append(row_id)
-            else:
-                logger.warning(f"Domain '{domain}' (ID: {row_id}) failed regex validation. Keeping in DB.")
-    else:
+    for row in rows:
+        domain = row['domain']
+        row_id = row['id']
+        sanitized = sanitize_and_extract_domains([domain])
+        if sanitized:
+            db_frozenset_items.update(sanitized)
+            db_ids_to_delete.append(row_id)
+        else:
+            logger.warning(f"Domain '{domain}' (ID: {row_id}) failed validation. Kept in DB.")
+
+    if not db_frozenset_items:
         logger.info("No matching blacklist entries found in database.")
 
-    db_frozenset = frozenset(db_frozenset_items)
-    local_frozenset = load_local_file_to_frozenset(BLACKLIST_FILE)
-    
-    merged_frozenset = frozenset(db_frozenset | local_frozenset)
+    local_frozenset = load_local_file(BLACKLIST_FILE)
+    merged_frozenset = frozenset(db_frozenset_items | local_frozenset)
     write_frozenset_to_file(merged_frozenset, BLACKLIST_FILE)
     
     if db_ids_to_delete:
@@ -173,13 +199,12 @@ def fetch_and_validate_adlist(url: str, session: requests.Session) -> bool:
         domains = sanitize_and_extract_domains(response.text.splitlines())
         return len(domains) == 0
     except requests.RequestException as e:
-        logger.warning(f"Failed to fetch adlist {url} after retries: {e}. Skipping deletion.")
+        logger.warning(f"Failed to fetch adlist {url}: {e}. Skipping deletion.")
         return False
 
 def step2_prune_empty_adlists(conn: sqlite3.Connection, session: requests.Session) -> None:
     logger.info("Starting Step 2: Empty Adlist Pruning")
     cursor = conn.cursor()
-    
     cursor.execute("SELECT id, address FROM adlist WHERE number = 0")
     suspect_lists = cursor.fetchall()
     
@@ -190,10 +215,7 @@ def step2_prune_empty_adlists(conn: sqlite3.Connection, session: requests.Sessio
     ids_to_delete = []
     for row in suspect_lists:
         adlist_id, url = row['id'], row['address']
-        logger.info(f"Verifying potentially empty adlist: {url}")
-        
         if fetch_and_validate_adlist(url, session):
-            logger.info(f"Verified {url} is completely empty.")
             ids_to_delete.append(adlist_id)
 
     if ids_to_delete:
@@ -228,17 +250,15 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
     
     existing_urls = set()
     if MINOR_LISTS_FILE.exists():
-        try:
-            with open(MINOR_LISTS_FILE, 'r', encoding='utf-8') as f:
-                existing_urls = set(f.read().splitlines())
-        except IOError as e:
-            logger.warning(f"Could not read {MINOR_LISTS_FILE.name}: {e}")
+        with open(MINOR_LISTS_FILE, 'r', encoding='utf-8') as f:
+            existing_urls = set(f.read().splitlines())
     
     try:
         with open(MINOR_LISTS_FILE, 'a', encoding='utf-8') as f:
             for url in urls:
                 if url not in existing_urls:
                     f.write(f"{url}\n")
+        os.chmod(MINOR_LISTS_FILE, FILE_PERMISSIONS)
         logger.info(f"Stored/Updated minor list URLs in {MINOR_LISTS_FILE.name}")
     except IOError as e:
         logger.error(f"Failed to append to {MINOR_LISTS_FILE.name}: {e}")
@@ -255,18 +275,15 @@ def step3_extract_minor_lists(conn: sqlite3.Connection, session: requests.Sessio
             logger.warning(f"Could not fetch domains from minor list {url}: {e}")
 
     new_frozenset = frozenset(all_extracted_domains)
-    existing_frozenset = load_local_file_to_frozenset(EXTRA_BLACKLIST_FILE)
-    
+    existing_frozenset = load_local_file(EXTRA_BLACKLIST_FILE)
     cumulative_frozenset = frozenset(new_frozenset | existing_frozenset)
     
-    # 1. Safely write/update blacklist-extra.txt first
     try:
         write_frozenset_to_file(cumulative_frozenset, EXTRA_BLACKLIST_FILE)
     except Exception as e:
-        logger.error(f"Failed to write blacklist-extra.txt. Aborting DB purge for minor lists: {e}")
+        logger.error(f"Failed to write blacklist-extra.txt. Aborting DB purge: {e}")
         return
 
-    # 2. Once verified on disk, purge those minor lists from the gravity database
     if adlist_ids_to_delete:
         try:
             cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({','.join('?'*len(adlist_ids_to_delete))})", adlist_ids_to_delete)
@@ -287,15 +304,10 @@ def reload_ftl_engine() -> None:
             capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
         )
         logger.info("FTL Engine reloaded successfully.")
-    except subprocess.TimeoutExpired:
-        logger.error(f"Docker command timed out after {CMD_TIMEOUT} seconds.")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to reload FTL engine. Error: {e.stderr.strip()}")
-    except FileNotFoundError:
-        logger.error("Docker command not found.")
+    except Exception as e:
+        logger.error(f"Failed to reload FTL engine: {e}")
 
 def push_to_github() -> None:
-    """Automates committing and pushing generated lists to GitHub securely."""
     logger.info("Starting GitHub Repository Backup...")
     
     expected_files = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
@@ -306,7 +318,6 @@ def push_to_github() -> None:
         return
 
     try:
-        # Check git status specifically for our target blocklist files (ignoring untracked extras like requirements.txt)
         status = subprocess.run(
             ["git", "status", "--porcelain"] + files_to_add, 
             cwd=SCRIPT_DIR, capture_output=True, text=True, check=True, timeout=CMD_TIMEOUT
@@ -317,49 +328,42 @@ def push_to_github() -> None:
             return
 
         commit_msg = secrets.token_hex(4)
-        logger.info(f"Generated secure commit message: {commit_msg}")
-
         subprocess.run(["git", "add"] + files_to_add, cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
         subprocess.run(["git", "commit", "-m", commit_msg], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
         subprocess.run(["git", "push"], cwd=SCRIPT_DIR, check=True, capture_output=True, timeout=CMD_TIMEOUT)
         
         logger.info(f"Successfully pushed updates to GitHub with commit: {commit_msg}")
         
-    except subprocess.TimeoutExpired:
-        logger.error(f"Git command timed out after {CMD_TIMEOUT} seconds.")
     except subprocess.CalledProcessError as e:
         stdout_msg = e.stdout.decode('utf-8', errors='ignore').strip() if isinstance(e.stdout, bytes) else str(e.stdout or '')
         stderr_msg = e.stderr.decode('utf-8', errors='ignore').strip() if isinstance(e.stderr, bytes) else str(e.stderr or '')
-        detailed_error = f"stderr: '{stderr_msg}' | stdout: '{stdout_msg}'" if (stderr_msg or stdout_msg) else f"Exit code {e.returncode}"
-        logger.error(f"GitHub push failed. Git error -> {detailed_error}")
-    except FileNotFoundError:
-        logger.error("Git command not found. Ensure git is installed and in the PATH.")
+        logger.error(f"GitHub push failed. Git error -> stderr: '{stderr_msg}' | stdout: '{stdout_msg}'")
+    except Exception as e:
+        logger.error(f"Unexpected error during GitHub push: {e}")
 
 # --- ORCHESTRATION ---
 
 def main():
     logger.info("Initiating Pi-hole Gravity Database Manager...")
+    lock_fd = acquire_exclusive_lock()
     
     try:
-        conn = get_db_connection()
-    except Exception as e:
-        logger.critical(f"Database connection failed: {e}")
-        return
-
-    with get_http_session() as http_session:
-        try:
+        backup_database()
+        
+        with closing(get_db_connection()) as conn, closing(get_http_session()) as http_session:
             step1_migrate_exact_blacklists(conn)
             step2_prune_empty_adlists(conn, http_session)
             step3_extract_minor_lists(conn, http_session)
-        except Exception as e:
-            logger.error(f"Unexpected error during execution pipeline: {e}", exc_info=True)
-        finally:
-            conn.close()
-            logger.info("Database connection closed securely.")
-
-    reload_ftl_engine()
-    push_to_github()
-    logger.info("All tasks completed.")
+            
+        reload_ftl_engine()
+        push_to_github()
+        
+    except Exception as e:
+        logger.error(f"Execution pipeline failed: {e}", exc_info=True)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+        logger.info("All tasks completed. Lock released.")
 
 if __name__ == "__main__":
     main()
