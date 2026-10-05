@@ -275,11 +275,18 @@ def step2_prune_empty_adlists(
     """Identifies and purges verified empty adlists from the database."""
     logger.info("Starting Step 2: Empty Adlist Pruning")
     cursor = conn.cursor()
-    cursor.execute("SELECT id, address FROM adlist WHERE number = 0")
+    
+    # Modified query to skip unprocessed lists (where date_updated is NULL)
+    cursor.execute("""
+        SELECT id, address 
+        FROM adlist 
+        WHERE number = 0 
+        AND date_updated IS NOT NULL
+    """)
     suspect_lists = cursor.fetchall()
 
     if not suspect_lists:
-        logger.info("No adlists with 0 entries found in database.")
+        logger.info("No previously processed adlists with 0 entries found in database.")
         return
 
     ids_to_delete: List[int] = []
@@ -308,7 +315,6 @@ def step2_prune_empty_adlists(
         except sqlite3.Error as e:
             cursor.execute("ROLLBACK;")
             logger.error("Database deletion failed for adlists: %s", e)
-
 
 def _append_minor_urls(urls: List[str]) -> None:
     """Appends new minor list URLs to the tracking file."""
