@@ -288,9 +288,7 @@ def step2_prune_empty_adlists(
     suspect_lists = cursor.fetchall()
 
     if not suspect_lists:
-        logger.info(
-            "No previously processed adlists with 0 entries found in database."
-        )
+        logger.info("No previously processed adlists with 0 entries found in database.")
         return
 
     ids_to_delete: List[int] = []
