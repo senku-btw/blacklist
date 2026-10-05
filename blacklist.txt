@@ -409,6 +409,7 @@ ads.cricbuzz.com
 ads.dailymotion.com
 ads.deezer.com
 ads.exoclick.com
+ads.facebook.com
 ads.flurry.com
 ads.footballaddicts.com
 ads.heyzap.com
@@ -613,6 +614,7 @@ amp.azure.net
 amplitude.com
 ampxchange.com
 amung.us
+an.facebook.com
 an.yandex.ru
 anadcoads.com
 analytics-static.ugc.bazaarvoice.com
@@ -652,6 +654,8 @@ api.getblueshift.com
 api.gravity.com
 api.huqindustries.co.uk
 api.instagram.com
+api.ipgeolocation.io
+api.ipify.org
 api.launchdarkly.com
 api.leanplum.com
 api.mcr.skype.com
@@ -1021,6 +1025,7 @@ cdn.bttrack.com
 cdn.castplatform.com
 cdn.cms-twdigitalassets.com
 cdn.configcat.com
+cdn.cookielaw.org
 cdn.cpmstar.com
 cdn.cpsoft86.com
 cdn.directrev.com
@@ -1224,6 +1229,8 @@ connexity.com
 connexity.net
 connextra.com
 consent-pref.trustarc.com
+consent.cookiebot.com
+consent.cookiebot.eu
 consentcdn.cookiebot.com
 consiliummedia.com
 consumable.com
@@ -1346,6 +1353,7 @@ data.flurry.com
 dataium.com
 datalogix.com
 datapipe.com
+dataplicity.com
 datasift.com
 dataxu.com
 dataxu.net
@@ -1504,6 +1512,7 @@ dynamicyield.com
 dynaserv.ads360.com
 dynatrace.com
 dyntrk.com
+dynupdate.no-ip.com
 e-kolay.net
 e-planning.net
 e.admob.com
@@ -1731,6 +1740,7 @@ freecontent.date
 freecontent.stream
 freedom.com
 freeforums.org
+freegeoip.app
 freeonlineusers.com
 freewheel.tv
 fresh8.co
@@ -1783,6 +1793,7 @@ geniee.co.jp
 geniegroupltd.co.uk
 genius.com
 geoads.com
+geolocation.onetrust.com
 gestionpub.com
 getclicky.com
 getgamesmart.com
@@ -2126,8 +2137,11 @@ ioam.de
 ios.bcfads.com
 iottekkasyno.eu
 iovation.com
+ip-api.com
+ipapi.co
 ipcounter.de
 iperceptions.com
+ipinfo.io
 ipredictive.com
 iprom.net
 iprom.si
@@ -2651,6 +2665,7 @@ nigerianprince419scams.com
 ninua.com
 nlb-0oihvq70lz6v3c6vn7.ap-southeast-1.nlb.aliyuncsslbintl.com
 nmrdope.bombaygrillindian.es
+no-ip.com
 noisecreep.com
 noktamedya.com
 nostringsattached.com
@@ -2765,6 +2780,7 @@ opinionbar.com
 opinmind.com
 opolen.com.br
 opt.ne.jp
+optanon.blob.core.windows.net
 optify.net
 optim.al
 optimatic.com
@@ -2898,6 +2914,7 @@ piwik.org
 pixanalytics.com
 pixazza.com
 pixel.adsafeprotected.com
+pixel.facebook.com
 pixel.mailchimp.com
 pixel.mathtag.com
 pixel.quantserve.com
@@ -2972,6 +2989,7 @@ privacy-mgmt.com
 privacyportal.onetrust.com
 prm.europacash.com
 pro-market.net
+pro.ip-api.com
 proclivitymedia.com
 proclivitysystems.com
 prod.balrog.prod.cloudops.mozgcp.net
@@ -3974,6 +3992,7 @@ www.crazyball.cc
 www.cudnekobiety.pl
 www.da-ads.com
 www.dallianceclubs.life
+www.dataplicity.com
 www.dirtydating.com
 www.dis.gd
 www.discord.co
@@ -4069,6 +4088,7 @@ www.motoren.ru
 www.mydreamdegree.com
 www.nagiefotki.com.pl
 www.nectarboy.github.io
+www.no-ip.com
 www.novastarled.com
 www.nuffnang.com.my
 www.ogloszenia-ukrainek.pl
