@@ -275,12 +275,12 @@ def step2_prune_empty_adlists(
     """Identifies and purges verified empty adlists from the database."""
     logger.info("Starting Step 2: Empty Adlist Pruning")
     cursor = conn.cursor()
-    
+
     # Modified query to skip unprocessed lists (where date_updated is NULL)
     cursor.execute("""
-        SELECT id, address 
-        FROM adlist 
-        WHERE number = 0 
+        SELECT id, address
+        FROM adlist
+        WHERE number = 0
         AND date_updated IS NOT NULL
     """)
     suspect_lists = cursor.fetchall()
