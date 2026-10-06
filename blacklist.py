@@ -396,7 +396,7 @@ def step3_extract_minor_lists(
         logger.error("Failed to write blacklist-extra.txt. Aborting DB purge: %s", e)
         return
 
-    # Verify which IDs actually still exist in the database to prevent foreign key errors
+    # Verify which IDs actually still exist in the database
     logger.info("Verifying existing adlist IDs in database before deletion...")
     placeholders = ",".join("?" * len(adlist_ids_to_inspect))
     cursor.execute(f"SELECT id FROM adlist WHERE id IN ({placeholders})", adlist_ids_to_inspect)
@@ -407,6 +407,7 @@ def step3_extract_minor_lists(
         try:
             del_placeholders = ",".join("?" * len(valid_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
+            cursor.execute("PRAGMA foreign_keys = OFF;")  # Temporarily bypass strict cascade locks to avoid hanging/constraints
             cursor.execute(
                 f"DELETE FROM adlist_by_group WHERE adlist_id IN ({del_placeholders})",
                 valid_ids_to_delete,
@@ -415,12 +416,14 @@ def step3_extract_minor_lists(
                 f"DELETE FROM adlist WHERE id IN ({del_placeholders})",
                 valid_ids_to_delete,
             )
+            cursor.execute("PRAGMA foreign_keys = ON;")
             cursor.execute("COMMIT;")
             logger.info(
                 "Successfully purged %d minor lists from gravity database.",
                 len(valid_ids_to_delete),
             )
         except sqlite3.Error as e:
+            cursor.execute("PRAGMA foreign_keys = ON;")
             cursor.execute("ROLLBACK;")
             logger.error("Database deletion failed for minor lists: %s", e)
     else:
