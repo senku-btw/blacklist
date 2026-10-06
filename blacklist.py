@@ -33,6 +33,8 @@ DB_PATH = Path(os.getenv("PIHOLE_DB_PATH", DEFAULT_DB_PATH))
 BLACKLIST_FILE = SCRIPT_DIR / "blacklist.txt"
 MINOR_LISTS_FILE = SCRIPT_DIR / "minor_lists.txt"
 EXTRA_BLACKLIST_FILE = SCRIPT_DIR / "blacklist-extra.txt"
+BLACKLISTS_DIR = SCRIPT_DIR / "blacklists"
+REGEX_DENY_FILE = BLACKLISTS_DIR / "regex_deny.txt"
 LOCK_FILE = SCRIPT_DIR / ".blacklist_manager.lock"
 
 # Strict binary path resolution to prevent PATH hijacking
@@ -174,6 +176,7 @@ def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
     """True POSIX atomic write operation using the system temp folder."""
     sorted_domains = sorted(domains)
 
+    filepath.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(dir=filepath.parent, text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -276,7 +279,6 @@ def step2_prune_empty_adlists(
     logger.info("Starting Step 2: Empty Adlist Pruning")
     cursor = conn.cursor()
 
-    # Modified query to skip unprocessed lists (where date_updated is NULL)
     cursor.execute(
         """
         SELECT id, address
@@ -405,6 +407,36 @@ def step3_extract_minor_lists(
             logger.error("Database deletion failed for minor lists: %s", e)
 
 
+def step4_export_regex_blacklist(conn: sqlite3.Connection) -> None:
+    """Parses blacklist regex entries from the DB, sanitizes them, and saves to blacklists/regex_deny.txt."""
+    logger.info("Starting Step 4: Regex Blacklist Export & Sanitization")
+    cursor = conn.cursor()
+
+    # Type 3 represents blacklist regex entries in Pi-hole
+    cursor.execute("SELECT domain FROM domainlist WHERE type = 3")
+    rows = cursor.fetchall()
+
+    sanitized_patterns: Set[str] = set()
+    for row in rows:
+        raw_pattern = row["domain"]
+        if raw_pattern:
+            # Remove any whitespace and non-visible/non-printable characters
+            cleaned = "".join(c for c in raw_pattern if not c.isspace() and c.isprintable())
+            if cleaned:
+                sanitized_patterns.add(cleaned)
+
+    # Place patterns in an immutable unique object (frozenset)
+    immutable_regex_set: FrozenSet[str] = frozenset(sanitized_patterns)
+
+    # Write out atomically, overwriting the file on each run
+    write_frozenset_to_file(immutable_regex_set, REGEX_DENY_FILE)
+    logger.info(
+        "Successfully exported %d sanitized regex deny patterns to %s",
+        len(immutable_regex_set),
+        REGEX_DENY_FILE.relative_to(SCRIPT_DIR)
+    )
+
+
 # --- SYSTEM INTEGRATIONS ---
 
 
@@ -473,7 +505,12 @@ def push_to_github() -> None:
         logger.error("Git binary not found. Cannot push to repository.")
         return
 
-    expected_files = ["blacklist.txt", "minor_lists.txt", "blacklist-extra.txt"]
+    expected_files = [
+        "blacklist.txt",
+        "minor_lists.txt",
+        "blacklist-extra.txt",
+        "blacklists/regex_deny.txt"
+    ]
     files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
 
     if not files_to_add:
@@ -557,6 +594,7 @@ def main() -> None:
             step1_migrate_exact_blacklists(conn)
             step2_prune_empty_adlists(conn, http_session)
             step3_extract_minor_lists(conn, http_session)
+            step4_export_regex_blacklist(conn)
 
         reload_ftl_engine()
         push_to_github()
