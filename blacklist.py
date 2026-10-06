@@ -262,6 +262,7 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
 
 def fetch_and_validate_adlist(url: str, session: requests.Session) -> bool:
     """Fetches an adlist URL and checks if it contains zero valid domains."""
+    logger.info("Checking suspect adlist: %s", url)
     try:
         response = session.get(url, timeout=15)
         response.raise_for_status()
@@ -367,6 +368,7 @@ def step3_extract_minor_lists(
 
     all_extracted_domains: Set[str] = set()
     for url in urls:
+        logger.info("Fetching minor list: %s", url)
         try:
             resp = session.get(url, timeout=15)
             resp.raise_for_status()
@@ -386,15 +388,15 @@ def step3_extract_minor_lists(
 
     if adlist_ids_to_delete:
         try:
+            placeholders = ",".join("?" * len(adlist_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
+            # Delete child table records first to avoid foreign key constraint failures
             cursor.execute(
-                f"DELETE FROM adlist_by_group WHERE adlist_id IN "
-                f"({','.join('?' * len(adlist_ids_to_delete))})",
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders})",
                 adlist_ids_to_delete,
             )
             cursor.execute(
-                f"DELETE FROM adlist WHERE id IN "
-                f"({','.join('?' * len(adlist_ids_to_delete))})",
+                f"DELETE FROM adlist WHERE id IN ({placeholders})",
                 adlist_ids_to_delete,
             )
             cursor.execute("COMMIT;")
@@ -470,141 +472,4 @@ def reload_ftl_engine(container_name: str = "pihole") -> None:
 
         logger.debug("Executing: %s", " ".join(kill_ftl_cmd))
         subprocess.run(
-            kill_ftl_cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=CMD_TIMEOUT,
-        )
-
-        logger.info(
-            "FTL memory wiped and process restarted. Dashboard will now reflect gravity.db."
-        )
-
-    except subprocess.CalledProcessError as e:
-        if "pkill" in e.cmd and e.returncode == 1:
-            logger.info(
-                "Graceful kill returned 1 (already stopped). "
-                "Attempting SIGKILL fallback..."
-            )
-            subprocess.run(
-                force_kill_cmd, capture_output=True, text=True, check=False, timeout=10
-            )
-        else:
-            stderr_msg = e.stderr.strip() if e.stderr else "Unknown error"
-            logger.warning("FTL cold-restart encountered an issue: %s", stderr_msg)
-
-    except subprocess.TimeoutExpired as e:
-        logger.warning("Command timed out: %s", " ".join(e.cmd))
-
-
-def push_to_github() -> None:
-    """Pushes local list updates to GitHub repository."""
-    logger.info("Starting GitHub Repository Backup...")
-    if not os.path.exists(GIT_BIN):
-        logger.error("Git binary not found. Cannot push to repository.")
-        return
-
-    expected_files = [
-        "blacklist.txt",
-        "minor_lists.txt",
-        "blacklist-extra.txt",
-        "blacklists/regex_deny.txt"
-    ]
-    files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
-
-    if not files_to_add:
-        logger.info("No target text files currently exist to commit.")
-        return
-
-    try:
-        status = subprocess.run(
-            [GIT_BIN, "status", "--porcelain"] + files_to_add,
-            cwd=SCRIPT_DIR,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=CMD_TIMEOUT,
-        )
-
-        if not status.stdout.strip():
-            logger.info(
-                "No changes detected in target list files. Skipping GitHub push."
-            )
-            return
-
-        commit_msg = secrets.token_hex(4)
-
-        subprocess.run(
-            [GIT_BIN, "add"] + files_to_add,
-            cwd=SCRIPT_DIR,
-            check=True,
-            capture_output=True,
-            timeout=CMD_TIMEOUT,
-        )
-        subprocess.run(
-            [GIT_BIN, "commit", "-m", commit_msg],
-            cwd=SCRIPT_DIR,
-            check=True,
-            capture_output=True,
-            timeout=CMD_TIMEOUT,
-        )
-        subprocess.run(
-            [GIT_BIN, "push"],
-            cwd=SCRIPT_DIR,
-            check=True,
-            capture_output=True,
-            timeout=CMD_TIMEOUT,
-        )
-
-        logger.info("Successfully pushed updates to GitHub with commit: %s", commit_msg)
-
-    except subprocess.TimeoutExpired:
-        logger.error("Git operation timed out.")
-    except subprocess.CalledProcessError as e:
-        stdout_msg = (
-            e.stdout.decode("utf-8", errors="ignore").strip()
-            if isinstance(e.stdout, bytes)
-            else str(e.stdout or "")
-        )
-        stderr_msg = (
-            e.stderr.decode("utf-8", errors="ignore").strip()
-            if isinstance(e.stderr, bytes)
-            else str(e.stderr or "")
-        )
-        logger.error(
-            "GitHub push failed. Git error -> stderr: '%s' | stdout: '%s'",
-            stderr_msg,
-            stdout_msg,
-        )
-
-
-# --- ORCHESTRATION ---
-
-
-def main() -> None:
-    """Main orchestration pipeline for Pi-hole Gravity Database Manager."""
-    logger.info("Initiating Pi-hole Gravity Database Manager...")
-    lock_manager.acquire()
-
-    try:
-        with closing(get_db_connection()) as conn, closing(
-            get_http_session()
-        ) as http_session:
-            step1_migrate_exact_blacklists(conn)
-            step2_prune_empty_adlists(conn, http_session)
-            step3_extract_minor_lists(conn, http_session)
-            step4_export_regex_blacklist(conn)
-
-        reload_ftl_engine()
-        push_to_github()
-
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Execution pipeline failed: %s", e, exc_info=True)
-    finally:
-        lock_manager.release()
-        logger.info("All tasks completed.")
-
-
-if __name__ == "__main__":
-    main()
+            kill_ftl_cmd
