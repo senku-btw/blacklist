@@ -197,6 +197,65 @@ def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
         raise
 
 
+# --- SYSTEM INTEGRATIONS ---
+
+
+def stop_ftl_engine(container_name: str = "pihole") -> None:
+    """Temporarily stops FTL to release database file locks."""
+    if not os.path.exists(DOCKER_BIN):
+        return
+    try:
+        subprocess.run(
+            [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+def reload_ftl_engine(container_name: str = "pihole") -> None:
+    """Forces the Pi-hole dashboard to update by restarting FTL."""
+    logger.info("Forcing FTL cold-restart to rebuild shared memory counters...")
+    if not os.path.exists(DOCKER_BIN):
+        logger.error("Docker binary not found. Cannot reload FTL engine.")
+        return
+
+    nuke_shm_cmd = [
+        DOCKER_BIN,
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        "rm -f /dev/shm/FTL-*",
+    ]
+    kill_ftl_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"]
+    force_kill_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"]
+
+    try:
+        subprocess.run(
+            nuke_shm_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=CMD_TIMEOUT,
+        )
+        subprocess.run(
+            kill_ftl_cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=CMD_TIMEOUT,
+        )
+        logger.info(
+            "FTL memory wiped and process restarted. Dashboard will now reflect gravity.db."
+        )
+    except Exception as e:
+        logger.warning("FTL cold-restart encountered an issue: %s", e)
+
+
 # --- CORE LOGIC STEPS ---
 
 
@@ -239,6 +298,7 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     write_frozenset_to_file(merged_frozenset, BLACKLIST_FILE)
 
     if db_ids_to_delete:
+        stop_ftl_engine()
         try:
             placeholders = ",".join("?" * len(db_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
@@ -301,6 +361,7 @@ def step2_prune_empty_adlists(
             ids_to_delete.append(adlist_id)
 
     if ids_to_delete:
+        stop_ftl_engine()
         try:
             placeholders = ",".join("?" * len(ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
@@ -404,10 +465,10 @@ def step3_extract_minor_lists(
 
     if valid_ids_to_delete:
         logger.info("Proceeding to delete %d verified adlist IDs from database...", len(valid_ids_to_delete))
+        stop_ftl_engine()
         try:
             del_placeholders = ",".join("?" * len(valid_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
-            cursor.execute("PRAGMA foreign_keys = OFF;")  # Temporarily bypass strict cascade locks to avoid hanging/constraints
             cursor.execute(
                 f"DELETE FROM adlist_by_group WHERE adlist_id IN ({del_placeholders})",
                 valid_ids_to_delete,
@@ -416,14 +477,12 @@ def step3_extract_minor_lists(
                 f"DELETE FROM adlist WHERE id IN ({del_placeholders})",
                 valid_ids_to_delete,
             )
-            cursor.execute("PRAGMA foreign_keys = ON;")
             cursor.execute("COMMIT;")
             logger.info(
                 "Successfully purged %d minor lists from gravity database.",
                 len(valid_ids_to_delete),
             )
         except sqlite3.Error as e:
-            cursor.execute("PRAGMA foreign_keys = ON;")
             cursor.execute("ROLLBACK;")
             logger.error("Database deletion failed for minor lists: %s", e)
     else:
@@ -435,7 +494,6 @@ def step4_export_regex_blacklist(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 4: Regex Blacklist Export & Sanitization")
     cursor = conn.cursor()
 
-    # Type 3 represents blacklist regex entries in Pi-hole, excluding those assigned to the 'healthcheck' group
     cursor.execute(
         """
         SELECT d.domain
@@ -469,65 +527,7 @@ def step4_export_regex_blacklist(conn: sqlite3.Connection) -> None:
     )
 
 
-# --- SYSTEM INTEGRATIONS ---
-
-
-def reload_ftl_engine(container_name: str = "pihole") -> None:
-    """Forces the Pi-hole dashboard to update by restarting FTL."""
-    logger.info("Forcing FTL cold-restart to rebuild shared memory counters...")
-    if not os.path.exists(DOCKER_BIN):
-        logger.error("Docker binary not found. Cannot reload FTL engine.")
-        return
-
-    nuke_shm_cmd = [
-        DOCKER_BIN,
-        "exec",
-        container_name,
-        "sh",
-        "-c",
-        "rm -f /dev/shm/FTL-*",
-    ]
-    kill_ftl_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"]
-    force_kill_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"]
-
-    try:
-        logger.debug("Executing: %s", " ".join(nuke_shm_cmd))
-        subprocess.run(
-            nuke_shm_cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=CMD_TIMEOUT,
-        )
-
-        logger.debug("Executing: %s", " ".join(kill_ftl_cmd))
-        subprocess.run(
-            kill_ftl_cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=CMD_TIMEOUT,
-        )
-
-        logger.info(
-            "FTL memory wiped and process restarted. Dashboard will now reflect gravity.db."
-        )
-
-    except subprocess.CalledProcessError as e:
-        if "pkill" in e.cmd and e.returncode == 1:
-            logger.info(
-                "Graceful kill returned 1 (already stopped). "
-                "Attempting SIGKILL fallback..."
-            )
-            subprocess.run(
-                force_kill_cmd, capture_output=True, text=True, check=False, timeout=10
-            )
-        else:
-            stderr_msg = e.stderr.strip() if e.stderr else "Unknown error"
-            logger.warning("FTL cold-restart encountered an issue: %s", stderr_msg)
-
-    except subprocess.TimeoutExpired as e:
-        logger.warning("Command timed out: %s", " ".join(e.cmd))
+# --- ORCHESTRATION ---
 
 
 def push_to_github() -> None:
@@ -609,9 +609,6 @@ def push_to_github() -> None:
             stderr_msg,
             stdout_msg,
         )
-
-
-# --- ORCHESTRATION ---
 
 
 def main() -> None:
