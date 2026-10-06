@@ -12,7 +12,6 @@
 ^track(ers?|ing)?[0-9]*[-.]
 ^traff(ic)?[-.]
 ^(.+[-_.])??xn--
-(.).g00.(.)
 (^|\.)(cookie|pixel|stat|telemetry|tracker|analytics?|metrics?)(\.|$)
 (^|\.)(tracking)(s?)(\.|$)
 (^|\.)(coinmin)(\.|$)
