@@ -234,4 +234,391 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     if not db_frozenset_items:
         logger.info("No matching blacklist entries found in database.")
 
-    local_froz
+    local_frozenset = load_local_file(BLACKLIST_FILE)
+    merged_frozenset = frozenset(db_frozenset_items | local_frozenset)
+    write_frozenset_to_file(merged_frozenset, BLACKLIST_FILE)
+
+    if db_ids_to_delete:
+        try:
+            placeholders = ",".join("?" * len(db_ids_to_delete))
+            cursor.execute("BEGIN TRANSACTION;")
+            cursor.execute(
+                f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders})",
+                db_ids_to_delete,
+            )
+            cursor.execute(
+                f"DELETE FROM domainlist WHERE id IN ({placeholders})",
+                db_ids_to_delete,
+            )
+            cursor.execute("COMMIT;")
+            logger.info(
+                "Deleted %d migrated entries from database.",
+                len(db_ids_to_delete),
+            )
+        except sqlite3.Error as e:
+            cursor.execute("ROLLBACK;")
+            logger.error("Failed to delete entries from DB: %s", e)
+
+
+def fetch_and_validate_adlist(url: str, session: requests.Session) -> bool:
+    """Fetches an adlist URL and checks if it contains zero valid domains."""
+    logger.info("Checking suspect adlist: %s", url)
+    try:
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        domains = sanitize_and_extract_domains(response.text.splitlines())
+        return len(domains) == 0
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch adlist %s: %s. Skipping deletion.", url, e)
+        return False
+
+
+def step2_prune_empty_adlists(
+    conn: sqlite3.Connection, session: requests.Session
+) -> None:
+    """Identifies and purges verified empty adlists from the database."""
+    logger.info("Starting Step 2: Empty Adlist Pruning")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, address
+        FROM adlist
+        WHERE number = 0
+        AND date_updated IS NOT NULL
+    """
+    )
+    suspect_lists = cursor.fetchall()
+
+    if not suspect_lists:
+        logger.info("No previously processed adlists with 0 entries found in database.")
+        return
+
+    ids_to_delete: List[int] = []
+    for row in suspect_lists:
+        adlist_id, url = row["id"], row["address"]
+        if fetch_and_validate_adlist(url, session):
+            ids_to_delete.append(adlist_id)
+
+    if ids_to_delete:
+        try:
+            placeholders = ",".join("?" * len(ids_to_delete))
+            cursor.execute("BEGIN TRANSACTION;")
+            cursor.execute(
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders})",
+                ids_to_delete,
+            )
+            cursor.execute(
+                f"DELETE FROM adlist WHERE id IN ({placeholders})",
+                ids_to_delete,
+            )
+            cursor.execute("COMMIT;")
+            logger.info(
+                "Safely purged %d verified empty adlists from database.",
+                len(ids_to_delete),
+            )
+        except sqlite3.Error as e:
+            cursor.execute("ROLLBACK;")
+            logger.error("Database deletion failed for adlists: %s", e)
+
+
+def _append_minor_urls(urls: List[str]) -> None:
+    """Appends new minor list URLs to the tracking file."""
+    existing_urls: Set[str] = set()
+    if MINOR_LISTS_FILE.exists():
+        with open(MINOR_LISTS_FILE, "r", encoding="utf-8") as f:
+            existing_urls = set(f.read().splitlines())
+
+    try:
+        with open(MINOR_LISTS_FILE, "a", encoding="utf-8") as f:
+            for url in urls:
+                if url not in existing_urls:
+                    f.write(f"{url}\n")
+        os.chmod(MINOR_LISTS_FILE, FILE_PERMISSIONS)
+        logger.info("Stored/Updated minor list URLs in %s", MINOR_LISTS_FILE.name)
+    except OSError as e:
+        logger.error("Failed to append to %s: %s", MINOR_LISTS_FILE.name, e)
+
+
+def step3_extract_minor_lists(
+    conn: sqlite3.Connection, session: requests.Session
+) -> None:
+    """Extracts minor adlists (1-100 entries) and moves them to local extra blacklist."""
+    logger.info("Starting Step 3: Minor List Extraction & Migration")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT a.id, a.address
+        FROM adlist a
+        JOIN adlist_by_group abg ON a.id = abg.adlist_id
+        WHERE abg.group_id = 0 AND a.number BETWEEN 1 AND 100
+        """
+    )
+    minor_lists = cursor.fetchall()
+
+    if not minor_lists:
+        logger.info("No minor lists (1-100 entries) found in default group.")
+        return
+
+    adlist_ids_to_delete = [row["id"] for row in minor_lists]
+    urls = [row["address"] for row in minor_lists]
+
+    _append_minor_urls(urls)
+
+    all_extracted_domains: Set[str] = set()
+    for url in urls:
+        logger.info("Fetching minor list: %s", url)
+        try:
+            resp = session.get(url, timeout=15)
+            resp.raise_for_status()
+            extracted = sanitize_and_extract_domains(resp.text.splitlines())
+            all_extracted_domains.update(extracted)
+        except requests.RequestException as e:
+            logger.warning("Could not fetch domains from minor list %s: %s", url, e)
+
+    try:
+        write_frozenset_to_file(
+            frozenset(all_extracted_domains | load_local_file(EXTRA_BLACKLIST_FILE)),
+            EXTRA_BLACKLIST_FILE,
+        )
+    except OSError as e:
+        logger.error("Failed to write blacklist-extra.txt. Aborting DB purge: %s", e)
+        return
+
+    if adlist_ids_to_delete:
+        try:
+            placeholders = ",".join("?" * len(adlist_ids_to_delete))
+            cursor.execute("BEGIN TRANSACTION;")
+            # Delete child table records first to avoid foreign key constraint failures
+            cursor.execute(
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders})",
+                adlist_ids_to_delete,
+            )
+            cursor.execute(
+                f"DELETE FROM adlist WHERE id IN ({placeholders})",
+                adlist_ids_to_delete,
+            )
+            cursor.execute("COMMIT;")
+            logger.info(
+                "Successfully purged %d minor lists from gravity database.",
+                len(adlist_ids_to_delete),
+            )
+        except sqlite3.Error as e:
+            cursor.execute("ROLLBACK;")
+            logger.error("Database deletion failed for minor lists: %s", e)
+
+
+def step4_export_regex_blacklist(conn: sqlite3.Connection) -> None:
+    """Parses blacklist regex entries from the DB, excluding the 'healthcheck' group, sanitizes them, and saves to blacklists/regex_deny.txt."""
+    logger.info("Starting Step 4: Regex Blacklist Export & Sanitization")
+    cursor = conn.cursor()
+
+    # Type 3 represents blacklist regex entries in Pi-hole, excluding those assigned to the 'healthcheck' group
+    cursor.execute(
+        """
+        SELECT d.domain
+        FROM domainlist d
+        WHERE d.type = 3
+        AND NOT EXISTS (
+            SELECT 1 
+            FROM domainlist_by_group dbg
+            JOIN "group" g ON dbg.group_id = g.id
+            WHERE dbg.domainlist_id = d.id AND g.name = 'healthcheck'
+        )
+        """
+    )
+    rows = cursor.fetchall()
+
+    sanitized_patterns: Set[str] = set()
+    for row in rows:
+        raw_pattern = row["domain"]
+        if raw_pattern:
+            # Remove any whitespace and non-visible/non-printable characters
+            cleaned = "".join(c for c in raw_pattern if not c.isspace() and c.isprintable())
+            if cleaned:
+                sanitized_patterns.add(cleaned)
+
+    # Place patterns in an immutable unique object (frozenset)
+    immutable_regex_set: FrozenSet[str] = frozenset(sanitized_patterns)
+
+    # Write out atomically, overwriting the file on each run
+    write_frozenset_to_file(immutable_regex_set, REGEX_DENY_FILE)
+    logger.info(
+        "Successfully exported %d sanitized regex deny patterns to %s",
+        len(immutable_regex_set),
+        REGEX_DENY_FILE.relative_to(SCRIPT_DIR)
+    )
+
+
+# --- SYSTEM INTEGRATIONS ---
+
+
+def reload_ftl_engine(container_name: str = "pihole") -> None:
+    """Forces the Pi-hole dashboard to update by restarting FTL."""
+    logger.info("Forcing FTL cold-restart to rebuild shared memory counters...")
+    if not os.path.exists(DOCKER_BIN):
+        logger.error("Docker binary not found. Cannot reload FTL engine.")
+        return
+
+    nuke_shm_cmd = [
+        DOCKER_BIN,
+        "exec",
+        container_name,
+        "sh",
+        "-c",
+        "rm -f /dev/shm/FTL-*",
+    ]
+    kill_ftl_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"]
+    force_kill_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"]
+
+    try:
+        logger.debug("Executing: %s", " ".join(nuke_shm_cmd))
+        subprocess.run(
+            nuke_shm_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=CMD_TIMEOUT,
+        )
+
+        logger.debug("Executing: %s", " ".join(kill_ftl_cmd))
+        subprocess.run(
+            kill_ftl_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=CMD_TIMEOUT,
+        )
+
+        logger.info(
+            "FTL memory wiped and process restarted. Dashboard will now reflect gravity.db."
+        )
+
+    except subprocess.CalledProcessError as e:
+        if "pkill" in e.cmd and e.returncode == 1:
+            logger.info(
+                "Graceful kill returned 1 (already stopped). "
+                "Attempting SIGKILL fallback..."
+            )
+            subprocess.run(
+                force_kill_cmd, capture_output=True, text=True, check=False, timeout=10
+            )
+        else:
+            stderr_msg = e.stderr.strip() if e.stderr else "Unknown error"
+            logger.warning("FTL cold-restart encountered an issue: %s", stderr_msg)
+
+    except subprocess.TimeoutExpired as e:
+        logger.warning("Command timed out: %s", " ".join(e.cmd))
+
+
+def push_to_github() -> None:
+    """Pushes local list updates to GitHub repository."""
+    logger.info("Starting GitHub Repository Backup...")
+    if not os.path.exists(GIT_BIN):
+        logger.error("Git binary not found. Cannot push to repository.")
+        return
+
+    expected_files = [
+        "blacklist.txt",
+        "minor_lists.txt",
+        "blacklist-extra.txt",
+        "blacklists/regex_deny.txt"
+    ]
+    files_to_add = [f for f in expected_files if (SCRIPT_DIR / f).exists()]
+
+    if not files_to_add:
+        logger.info("No target text files currently exist to commit.")
+        return
+
+    try:
+        status = subprocess.run(
+            [GIT_BIN, "status", "--porcelain"] + files_to_add,
+            cwd=SCRIPT_DIR,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=CMD_TIMEOUT,
+        )
+
+        if not status.stdout.strip():
+            logger.info(
+                "No changes detected in target list files. Skipping GitHub push."
+            )
+            return
+
+        commit_msg = secrets.token_hex(4)
+
+        subprocess.run(
+            [GIT_BIN, "add"] + files_to_add,
+            cwd=SCRIPT_DIR,
+            check=True,
+            capture_output=True,
+            timeout=CMD_TIMEOUT,
+        )
+        subprocess.run(
+            [GIT_BIN, "commit", "-m", commit_msg],
+            cwd=SCRIPT_DIR,
+            check=True,
+            capture_output=True,
+            timeout=CMD_TIMEOUT,
+        )
+        subprocess.run(
+            [GIT_BIN, "push"],
+            cwd=SCRIPT_DIR,
+            check=True,
+            capture_output=True,
+            timeout=CMD_TIMEOUT,
+        )
+
+        logger.info("Successfully pushed updates to GitHub with commit: %s", commit_msg)
+
+    except subprocess.TimeoutExpired:
+        logger.error("Git operation timed out.")
+    except subprocess.CalledProcessError as e:
+        stdout_msg = (
+            e.stdout.decode("utf-8", errors="ignore").strip()
+            if isinstance(e.stdout, bytes)
+            else str(e.stdout or "")
+        )
+        stderr_msg = (
+            e.stderr.decode("utf-8", errors="ignore").strip()
+            if isinstance(e.stderr, bytes)
+            else str(e.stderr or "")
+        )
+        logger.error(
+            "GitHub push failed. Git error -> stderr: '%s' | stdout: '%s'",
+            stderr_msg,
+            stdout_msg,
+        )
+
+
+# --- ORCHESTRATION ---
+
+
+def main() -> None:
+    """Main orchestration pipeline for Pi-hole Gravity Database Manager."""
+    logger.info("Initiating Pi-hole Gravity Database Manager...")
+    lock_manager.acquire()
+
+    try:
+        with closing(get_db_connection()) as conn, closing(
+            get_http_session()
+        ) as http_session:
+            step1_migrate_exact_blacklists(conn)
+            step2_prune_empty_adlists(conn, http_session)
+            step3_extract_minor_lists(conn, http_session)
+            step4_export_regex_blacklist(conn)
+
+        reload_ftl_engine()
+        push_to_github()
+
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Execution pipeline failed: %s", e, exc_info=True)
+    finally:
+        lock_manager.release()
+        logger.info("All tasks completed.")
+
+
+if __name__ == "__main__":
+    main()
