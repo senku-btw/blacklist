@@ -56,7 +56,6 @@ def get_db_connection(db_path: Path):
     """
     assert db_path.exists(), f"Database file missing at path: {db_path}"
     
-    # Connect in read-write mode with a 60-second lock timeout
     conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=60.0)
     conn.row_factory = sqlite3.Row
     try:
@@ -240,37 +239,36 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
 
 def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     """
-    Step 3: Identify adlists configured as blocklists that have 0 domain entries.
+    Step 3: Identify adlists configured as blocklists (type = 0) that have 0 domain entries.
     Executes a concrete multi-step verification before purging them in-place.
     """
     logger.info("Starting Step 3: Empty blocklists purge verification...")
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, address, number_of_rules FROM adlist;")
+    # Query adlists configured specifically as blocklists (type 0 = blocklist)
+    cursor.execute("SELECT id, address FROM adlist WHERE type = 0;")
     adlists = cursor.fetchall()
 
     empty_adlist_ids: List[int] = []
 
     for adlist in adlists:
         adlist_id = adlist["id"]
-        meta_count = adlist["number_of_rules"]
 
+        # Multi-check Verification 1: Exact aggregate count in gravity table
         cursor.execute("SELECT COUNT(1) AS cnt FROM gravity WHERE adlist_id = ?;", (adlist_id,))
         gravity_count = cursor.fetchone()["cnt"]
 
+        # Multi-check Verification 2: Existence scan for single record
         cursor.execute("SELECT 1 FROM gravity WHERE adlist_id = ? LIMIT 1;", (adlist_id,))
         has_gravity_entry = cursor.fetchone() is not None
 
-        condition_meta = (meta_count == 0 or meta_count is None)
-        condition_gravity = (gravity_count == 0 and not has_gravity_entry)
-
-        if condition_gravity:
+        # Verification: Both checks must independently confirm 0 records
+        if gravity_count == 0 and not has_gravity_entry:
             assert gravity_count == 0, f"Inconsistency in gravity table count for adlist {adlist_id}"
             assert not has_gravity_entry, f"Found record despite zero count for adlist {adlist_id}"
 
-            if condition_meta:
-                empty_adlist_ids.append(adlist_id)
-                logger.info(f"100% Confirmed Empty Adlist ID {adlist_id}: {adlist['address']}")
+            empty_adlist_ids.append(adlist_id)
+            logger.info(f"100% Confirmed Empty Adlist ID {adlist_id}: {adlist['address']}")
 
     if empty_adlist_ids:
         logger.info(f"Purging {len(empty_adlist_ids)} verified empty adlists from database in-place...")
