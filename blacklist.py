@@ -343,7 +343,7 @@ def _append_minor_urls(urls: List[str]) -> None:
 def step3_extract_minor_lists(
     conn: sqlite3.Connection, session: requests.Session
 ) -> None:
-    """Extracts minor adlists (1-100 entries) and moves them to local extra blacklist."""
+    """Extracts minor adlists (1-100 entries) and moves them to local extra blacklist with verbose logging."""
     logger.info("Starting Step 3: Minor List Extraction & Migration")
     cursor = conn.cursor()
 
@@ -361,52 +361,70 @@ def step3_extract_minor_lists(
         logger.info("No minor lists (1-100 entries) found in default group.")
         return
 
-    adlist_ids_to_delete = [row["id"] for row in minor_lists]
+    logger.info("Found %d candidate minor list(s) to process.", len(minor_lists))
+
+    adlist_ids_to_inspect = [row["id"] for row in minor_lists]
     urls = [row["address"] for row in minor_lists]
 
     _append_minor_urls(urls)
 
     all_extracted_domains: Set[str] = set()
-    for url in urls:
-        logger.info("Fetching minor list: %s", url)
+    for idx, (adlist_id, url) in enumerate(zip(adlist_ids_to_inspect, urls), start=1):
+        logger.info("[%d/%d] Fetching minor list ID %s: %s", idx, len(urls), adlist_id, url)
         try:
             resp = session.get(url, timeout=15)
             resp.raise_for_status()
             extracted = sanitize_and_extract_domains(resp.text.splitlines())
+            logger.info("Extracted %d valid domains from %s", len(extracted), url)
             all_extracted_domains.update(extracted)
         except requests.RequestException as e:
             logger.warning("Could not fetch domains from minor list %s: %s", url, e)
+
+    logger.info(
+        "Total unique domains collected across all minor lists: %d. Preparing to write to %s...",
+        len(all_extracted_domains),
+        EXTRA_BLACKLIST_FILE.name
+    )
 
     try:
         write_frozenset_to_file(
             frozenset(all_extracted_domains | load_local_file(EXTRA_BLACKLIST_FILE)),
             EXTRA_BLACKLIST_FILE,
         )
+        logger.info("Successfully completed writing to %s", EXTRA_BLACKLIST_FILE.name)
     except OSError as e:
         logger.error("Failed to write blacklist-extra.txt. Aborting DB purge: %s", e)
         return
 
-    if adlist_ids_to_delete:
+    # Verify which IDs actually still exist in the database to prevent foreign key errors
+    logger.info("Verifying existing adlist IDs in database before deletion...")
+    placeholders = ",".join("?" * len(adlist_ids_to_inspect))
+    cursor.execute(f"SELECT id FROM adlist WHERE id IN ({placeholders})", adlist_ids_to_inspect)
+    valid_ids_to_delete = [row["id"] for row in cursor.fetchall()]
+
+    if valid_ids_to_delete:
+        logger.info("Proceeding to delete %d verified adlist IDs from database...", len(valid_ids_to_delete))
         try:
-            placeholders = ",".join("?" * len(adlist_ids_to_delete))
+            del_placeholders = ",".join("?" * len(valid_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
-            # Delete child table records first to avoid foreign key constraint failures
             cursor.execute(
-                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders})",
-                adlist_ids_to_delete,
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({del_placeholders})",
+                valid_ids_to_delete,
             )
             cursor.execute(
-                f"DELETE FROM adlist WHERE id IN ({placeholders})",
-                adlist_ids_to_delete,
+                f"DELETE FROM adlist WHERE id IN ({del_placeholders})",
+                valid_ids_to_delete,
             )
             cursor.execute("COMMIT;")
             logger.info(
                 "Successfully purged %d minor lists from gravity database.",
-                len(adlist_ids_to_delete),
+                len(valid_ids_to_delete),
             )
         except sqlite3.Error as e:
             cursor.execute("ROLLBACK;")
             logger.error("Database deletion failed for minor lists: %s", e)
+    else:
+        logger.info("No matching adlist IDs found in database for deletion (they may have already been purged).")
 
 
 def step4_export_regex_blacklist(conn: sqlite3.Connection) -> None:
@@ -434,15 +452,12 @@ def step4_export_regex_blacklist(conn: sqlite3.Connection) -> None:
     for row in rows:
         raw_pattern = row["domain"]
         if raw_pattern:
-            # Remove any whitespace and non-visible/non-printable characters
             cleaned = "".join(c for c in raw_pattern if not c.isspace() and c.isprintable())
             if cleaned:
                 sanitized_patterns.add(cleaned)
 
-    # Place patterns in an immutable unique object (frozenset)
     immutable_regex_set: FrozenSet[str] = frozenset(sanitized_patterns)
 
-    # Write out atomically, overwriting the file on each run
     write_frozenset_to_file(immutable_regex_set, REGEX_DENY_FILE)
     logger.info(
         "Successfully exported %d sanitized regex deny patterns to %s",
