@@ -239,20 +239,37 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
 
 def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     """
-    Step 3: Identify adlists configured as blocklists (type = 0) that have 0 domain entries.
-    Executes a concrete multi-step verification before purging them in-place.
+    Step 3: Identify adlists that have 0 domain entries.
+    Queries the database efficiently to find empty candidates FIRST, 
+    then independently verifies only those candidates before purging.
     """
     logger.info("Starting Step 3: Empty blocklists purge verification...")
     cursor = conn.cursor()
 
-    # Query adlists configured specifically as blocklists (type 0 = blocklist)
-    cursor.execute("SELECT id, address FROM adlist WHERE type = 0;")
-    adlists = cursor.fetchall()
+    # Efficiently ask the database for adlists that have NO entries in the gravity table.
+    # We check for the 'type' column dynamically to ensure schema compatibility.
+    cursor.execute("PRAGMA table_info(adlist);")
+    columns = [col["name"] for col in cursor.fetchall()]
+    type_filter = " AND type = 0" if "type" in columns else ""
+
+    find_empty_candidates_query = f"""
+        SELECT id, address 
+        FROM adlist 
+        WHERE id NOT IN (SELECT DISTINCT adlist_id FROM gravity){type_filter};
+    """
+    cursor.execute(find_empty_candidates_query)
+    empty_candidates = cursor.fetchall()
 
     empty_adlist_ids: List[int] = []
 
-    for adlist in adlists:
-        adlist_id = adlist["id"]
+    if not empty_candidates:
+        logger.info("Step 3: No empty blocklist candidates identified by the database.")
+        return
+
+    logger.info(f"Database identified {len(empty_candidates)} potentially empty lists. Independently verifying...")
+
+    for candidate in empty_candidates:
+        adlist_id = candidate["id"]
 
         # Multi-check Verification 1: Exact aggregate count in gravity table
         cursor.execute("SELECT COUNT(1) AS cnt FROM gravity WHERE adlist_id = ?;", (adlist_id,))
@@ -268,7 +285,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
             assert not has_gravity_entry, f"Found record despite zero count for adlist {adlist_id}"
 
             empty_adlist_ids.append(adlist_id)
-            logger.info(f"100% Confirmed Empty Adlist ID {adlist_id}: {adlist['address']}")
+            logger.info(f"100% Confirmed Empty Adlist ID {adlist_id}: {candidate['address']}")
 
     if empty_adlist_ids:
         logger.info(f"Purging {len(empty_adlist_ids)} verified empty adlists from database in-place...")
@@ -277,18 +294,19 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
         conn.commit()
         logger.info("Step 3 empty adlists purge completed.")
     else:
-        logger.info("Step 3: No empty blocklists detected.")
+        logger.info("Step 3: No empty blocklists passed verification.")
 
 
 def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     """
     Step 4: Identify blocklists with 1 to 100 entries belonging EXCLUSIVELY to 'Default' group.
-    Extract domains into blacklist-extra.txt and record list URLs into minor-lists.txt.
+    Uses bulk-query optimization to prevent loop freezing.
     """
     logger.info("Starting Step 4: Minor blocklists extraction...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
 
+    # 1. Find adlists that belong EXCLUSIVELY to Default group
     query_exclusive_default = """
         SELECT adlist_id 
         FROM adlist_by_group 
@@ -296,47 +314,65 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         HAVING COUNT(DISTINCT group_id) = 1 AND MAX(group_id) = ?
     """
     cursor.execute(query_exclusive_default, (default_group_id,))
-    exclusive_adlist_ids = {row["adlist_id"] for row in cursor.fetchall()}
+    exclusive_adlist_ids = [row["adlist_id"] for row in cursor.fetchall()]
+
+    if not exclusive_adlist_ids:
+        logger.info("Step 4: No exclusive default group lists found.")
+        return
+
+    # 2. Bulk query SQLite to find which of those lists have 1-100 domains
+    placeholders = ",".join(["?"] * len(exclusive_adlist_ids))
+    bulk_count_query = f"""
+        SELECT adlist_id, COUNT(1) as cnt 
+        FROM gravity 
+        WHERE adlist_id IN ({placeholders}) 
+        GROUP BY adlist_id 
+        HAVING cnt BETWEEN 1 AND 100;
+    """
+    cursor.execute(bulk_count_query, tuple(exclusive_adlist_ids))
+    minor_candidates = cursor.fetchall()
 
     minor_adlist_urls: Set[str] = set()
     extracted_domains: Set[str] = set()
 
-    for aid in exclusive_adlist_ids:
-        cursor.execute("SELECT COUNT(1) AS cnt FROM gravity WHERE adlist_id = ?;", (aid,))
-        count = cursor.fetchone()["cnt"]
+    logger.info(f"Database identified {len(minor_candidates)} minor lists. Extracting domains...")
 
-        if 1 <= count <= 100:
-            cursor.execute("SELECT domain FROM gravity WHERE adlist_id = ?;", (aid,))
-            domain_rows = cursor.fetchall()
-            
-            assert len(domain_rows) == count, f"Count mismatch verification failed for adlist ID {aid}"
+    for candidate in minor_candidates:
+        aid = candidate["adlist_id"]
+        expected_count = candidate["cnt"]
 
-            cursor.execute("SELECT address FROM adlist WHERE id = ?;", (aid,))
-            addr_row = cursor.fetchone()
-            if addr_row and addr_row["address"]:
-                minor_adlist_urls.add(addr_row["address"].strip())
+        # Fetch domains for verification and extraction
+        cursor.execute("SELECT domain FROM gravity WHERE adlist_id = ?;", (aid,))
+        domain_rows = cursor.fetchall()
+        
+        assert len(domain_rows) == expected_count, f"Count mismatch verification failed for adlist ID {aid}"
 
-            for d_row in domain_rows:
-                sanitized = sanitize_domain(d_row["domain"])
-                if sanitized:
-                    extracted_domains.add(sanitized)
+        cursor.execute("SELECT address FROM adlist WHERE id = ?;", (aid,))
+        addr_row = cursor.fetchone()
+        if addr_row and addr_row["address"]:
+            minor_adlist_urls.add(addr_row["address"].strip())
 
-    logger.info(f"Extracted {len(extracted_domains)} domains from {len(minor_adlist_urls)} minor lists.")
+        for d_row in domain_rows:
+            sanitized = sanitize_domain(d_row["domain"])
+            if sanitized:
+                extracted_domains.add(sanitized)
 
-    existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
-    combined_minor_urls = existing_minor_urls.union(minor_adlist_urls)
-    sorted_minor_urls = sorted(combined_minor_urls)
-    atomic_write_file(MINOR_LISTS_FILE, sorted_minor_urls)
+    if extracted_domains:
+        logger.info(f"Extracted {len(extracted_domains)} domains from {len(minor_adlist_urls)} minor lists.")
 
-    existing_extra_domains = read_text_file_lines(EXTRA_FILE)
-    sanitized_existing_extra = {s for line in existing_extra_domains if (s := sanitize_domain(line))}
+        existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
+        combined_minor_urls = existing_minor_urls.union(minor_adlist_urls)
+        atomic_write_file(MINOR_LISTS_FILE, sorted(combined_minor_urls))
 
-    combined_extra_domains = sanitized_existing_extra.union(extracted_domains)
-    sorted_extra_domains = sorted(combined_extra_domains)
-    atomic_write_file(EXTRA_FILE, sorted_extra_domains)
+        existing_extra_domains = read_text_file_lines(EXTRA_FILE)
+        sanitized_existing_extra = {s for line in existing_extra_domains if (s := sanitize_domain(line))}
 
-    logger.info("Step 4 minor blocklist extraction completed.")
-
+        combined_extra_domains = sanitized_existing_extra.union(extracted_domains)
+        atomic_write_file(EXTRA_FILE, sorted(combined_extra_domains))
+        
+        logger.info("Step 4 minor blocklist extraction completed.")
+    else:
+        logger.info("Step 4: No minor lists met all criteria.")
 
 def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     """
