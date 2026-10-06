@@ -29,6 +29,7 @@ DEFAULT_DB_PATH = (
     "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"
 )
 DB_PATH = Path(os.getenv("PIHOLE_DB_PATH", DEFAULT_DB_PATH))
+CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
 
 BLACKLIST_FILE = SCRIPT_DIR / "blacklist.txt"
 MINOR_LISTS_FILE = SCRIPT_DIR / "minor_lists.txt"
@@ -200,60 +201,70 @@ def write_frozenset_to_file(domains: FrozenSet[str], filepath: Path) -> None:
 # --- SYSTEM INTEGRATIONS ---
 
 
-def stop_ftl_engine(container_name: str = "pihole") -> None:
-    """Temporarily stops FTL to release database file locks."""
+def stop_pihole_container() -> None:
+    """Stops the Pi-hole container completely to release all file handles and locks."""
     if not os.path.exists(DOCKER_BIN):
         return
+    logger.info("Stopping Docker container '%s' to release database locks...", CONTAINER_NAME)
     try:
         subprocess.run(
-            [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"],
+            [DOCKER_BIN, "stop", CONTAINER_NAME],
             capture_output=True,
             text=True,
-            check=False,
-            timeout=10,
+            check=True,
+            timeout=20,
         )
-    except Exception:
-        pass
+        logger.info("Container '%s' successfully stopped.", CONTAINER_NAME)
+    except Exception as e:
+        logger.warning("Failed to stop container cleanly: %s", e)
 
 
-def reload_ftl_engine(container_name: str = "pihole") -> None:
-    """Forces the Pi-hole dashboard to update by restarting FTL."""
-    logger.info("Forcing FTL cold-restart to rebuild shared memory counters...")
+def start_pihole_container() -> None:
+    """Starts the Pi-hole container back up."""
     if not os.path.exists(DOCKER_BIN):
-        logger.error("Docker binary not found. Cannot reload FTL engine.")
+        return
+    logger.info("Starting Docker container '%s'...", CONTAINER_NAME)
+    try:
+        subprocess.run(
+            [DOCKER_BIN, "start", CONTAINER_NAME],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=20,
+        )
+        logger.info("Container '%s' successfully started.", CONTAINER_NAME)
+    except Exception as e:
+        logger.error("Failed to start container: %s", e)
+
+
+def reload_ftl_engine() -> None:
+    """Cleans shared memory and ensures container is running fresh."""
+    logger.info("Performing container restart to rebuild shared memory counters...")
+    if not os.path.exists(DOCKER_BIN):
+        logger.error("Docker binary not found.")
         return
 
     nuke_shm_cmd = [
         DOCKER_BIN,
         "exec",
-        container_name,
+        CONTAINER_NAME,
         "sh",
         "-c",
         "rm -f /dev/shm/FTL-*",
     ]
-    kill_ftl_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-TERM", "pihole-FTL"]
-    force_kill_cmd = [DOCKER_BIN, "exec", container_name, "pkill", "-9", "pihole-FTL"]
 
     try:
+        start_pihole_container()
         subprocess.run(
             nuke_shm_cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=CMD_TIMEOUT,
-        )
-        subprocess.run(
-            kill_ftl_cmd,
             capture_output=True,
             text=True,
             check=False,
             timeout=CMD_TIMEOUT,
         )
-        logger.info(
-            "FTL memory wiped and process restarted. Dashboard will now reflect gravity.db."
-        )
+        logger.info("Pi-hole container fully restarted and shared memory wiped.")
     except Exception as e:
-        logger.warning("FTL cold-restart encountered an issue: %s", e)
+        logger.warning("Container reload encountered an issue: %s", e)
 
 
 # --- CORE LOGIC STEPS ---
@@ -298,7 +309,7 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
     write_frozenset_to_file(merged_frozenset, BLACKLIST_FILE)
 
     if db_ids_to_delete:
-        stop_ftl_engine()
+        stop_pihole_container()
         try:
             placeholders = ",".join("?" * len(db_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
@@ -318,6 +329,8 @@ def step1_migrate_exact_blacklists(conn: sqlite3.Connection) -> None:
         except sqlite3.Error as e:
             cursor.execute("ROLLBACK;")
             logger.error("Failed to delete entries from DB: %s", e)
+        finally:
+            start_pihole_container()
 
 
 def fetch_and_validate_adlist(url: str, session: requests.Session) -> bool:
@@ -361,7 +374,7 @@ def step2_prune_empty_adlists(
             ids_to_delete.append(adlist_id)
 
     if ids_to_delete:
-        stop_ftl_engine()
+        stop_pihole_container()
         try:
             placeholders = ",".join("?" * len(ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
@@ -381,6 +394,8 @@ def step2_prune_empty_adlists(
         except sqlite3.Error as e:
             cursor.execute("ROLLBACK;")
             logger.error("Database deletion failed for adlists: %s", e)
+        finally:
+            start_pihole_container()
 
 
 def _append_minor_urls(urls: List[str]) -> None:
@@ -465,7 +480,7 @@ def step3_extract_minor_lists(
 
     if valid_ids_to_delete:
         logger.info("Proceeding to delete %d verified adlist IDs from database...", len(valid_ids_to_delete))
-        stop_ftl_engine()
+        stop_pihole_container()
         try:
             del_placeholders = ",".join("?" * len(valid_ids_to_delete))
             cursor.execute("BEGIN TRANSACTION;")
@@ -485,6 +500,8 @@ def step3_extract_minor_lists(
         except sqlite3.Error as e:
             cursor.execute("ROLLBACK;")
             logger.error("Database deletion failed for minor lists: %s", e)
+        finally:
+            start_pihole_container()
     else:
         logger.info("No matching adlist IDs found in database for deletion (they may have already been purged).")
 
