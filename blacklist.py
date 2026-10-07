@@ -3,8 +3,8 @@
 Pi-hole gravity.db Maintenance and Blacklist Extraction Suite.
 
 Direct in-place database processor for Pi-hole gravity.db.
-Extracts, sanitizes, and cleans database entries directly without file backups,
-utilizing SQLite transaction rollbacks and busy timeouts for safety.
+Extracts, sanitizes, and cleans database entries directly, utilizing 
+SQLite transaction rollbacks, index optimization, and WAL checkpoints.
 """
 
 import os
@@ -52,7 +52,8 @@ logger = logging.getLogger("gravity_maintenance")
 def get_db_connection(db_path: Path):
     """
     Context manager for editing gravity.db directly in-place.
-    Uses busy_timeout pragma and URI read-write mode to resolve lock stalls with Pi-hole FTL.
+    Uses busy_timeout and forces a WAL checkpoint on exit to ensure 
+    changes sync from gravity.db-wal to gravity.db immediately.
     """
     assert db_path.exists(), f"Database file missing at path: {db_path}"
     
@@ -67,7 +68,26 @@ def get_db_connection(db_path: Path):
         logger.error(f"Database transaction error encountered, rolling back: {err}")
         raise
     finally:
+        try:
+            # Force WAL to merge into main database file before closing
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except Exception as e:
+            logger.warning(f"WAL checkpoint failed (safe to ignore): {e}")
         conn.close()
+
+
+def optimize_database_indexes(conn: sqlite3.Connection) -> None:
+    """
+    Creates an index on adlist_id in the gravity table if it doesn't already exist.
+    This turns 2-hour full table scans into millisecond lookups.
+    """
+    logger.info("Verifying database indexes for performance optimization...")
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_script_adlist_id ON gravity(adlist_id);")
+        conn.commit()
+        logger.info("Database indexes are optimized.")
+    except Exception as err:
+        logger.warning(f"Could not create index (script will run slowly): {err}")
 
 
 def sanitize_domain(raw_domain: str) -> Optional[str]:
@@ -246,8 +266,6 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 3: Empty blocklists purge verification...")
     cursor = conn.cursor()
 
-    # Efficiently ask the database for adlists that have NO entries in the gravity table.
-    # We check for the 'type' column dynamically to ensure schema compatibility.
     cursor.execute("PRAGMA table_info(adlist);")
     columns = [col["name"] for col in cursor.fetchall()]
     type_filter = " AND type = 0" if "type" in columns else ""
@@ -271,15 +289,12 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     for candidate in empty_candidates:
         adlist_id = candidate["id"]
 
-        # Multi-check Verification 1: Exact aggregate count in gravity table
         cursor.execute("SELECT COUNT(1) AS cnt FROM gravity WHERE adlist_id = ?;", (adlist_id,))
         gravity_count = cursor.fetchone()["cnt"]
 
-        # Multi-check Verification 2: Existence scan for single record
         cursor.execute("SELECT 1 FROM gravity WHERE adlist_id = ? LIMIT 1;", (adlist_id,))
         has_gravity_entry = cursor.fetchone() is not None
 
-        # Verification: Both checks must independently confirm 0 records
         if gravity_count == 0 and not has_gravity_entry:
             assert gravity_count == 0, f"Inconsistency in gravity table count for adlist {adlist_id}"
             assert not has_gravity_entry, f"Found record despite zero count for adlist {adlist_id}"
@@ -306,7 +321,6 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
 
-    # 1. Find adlists that belong EXCLUSIVELY to Default group
     query_exclusive_default = """
         SELECT adlist_id 
         FROM adlist_by_group 
@@ -320,7 +334,6 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         logger.info("Step 4: No exclusive default group lists found.")
         return
 
-    # 2. Bulk query SQLite to find which of those lists have 1-100 domains
     placeholders = ",".join(["?"] * len(exclusive_adlist_ids))
     bulk_count_query = f"""
         SELECT adlist_id, COUNT(1) as cnt 
@@ -335,13 +348,16 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     minor_adlist_urls: Set[str] = set()
     extracted_domains: Set[str] = set()
 
+    if not minor_candidates:
+        logger.info("Step 4: No minor lists with 1 to 100 domains identified.")
+        return
+
     logger.info(f"Database identified {len(minor_candidates)} minor lists. Extracting domains...")
 
     for candidate in minor_candidates:
         aid = candidate["adlist_id"]
         expected_count = candidate["cnt"]
 
-        # Fetch domains for verification and extraction
         cursor.execute("SELECT domain FROM gravity WHERE adlist_id = ?;", (aid,))
         domain_rows = cursor.fetchall()
         
@@ -374,10 +390,11 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     else:
         logger.info("Step 4: No minor lists met all criteria.")
 
+
 def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     """
     Step 5: Purge adlists matching URLs in minor-lists.txt from gravity.db in-place.
-    Does not modify minor-lists.txt.
+    Deletes both the gravity domains and the adlist itself.
     """
     logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
     minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
@@ -390,7 +407,8 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     purged_count = 0
 
     for url in minor_urls:
-        cursor.execute("SELECT id FROM adlist WHERE address = ?;", (url,))
+        # Using TRIM to ensure whitespace mismatches don't prevent deletion
+        cursor.execute("SELECT id FROM adlist WHERE TRIM(address) = ?;", (url,))
         rows = cursor.fetchall()
         for row in rows:
             aid = row["id"]
@@ -447,6 +465,23 @@ def step_6_git_commit_and_push() -> None:
         raise
 
 
+def reload_pihole_docker() -> None:
+    """
+    Signals the Pi-hole container to reload its lists into active memory,
+    ensuring the web UI and Pi-hole DNS engine sync with the cleaned database.
+    """
+    logger.info("Signaling 'pihole' Docker container to reload lists into RAM...")
+    try:
+        subprocess.run(
+            ["docker", "exec", "pihole", "pihole", "restartdns", "reload-lists"], 
+            check=True,
+            stdout=subprocess.DEVNULL
+        )
+        logger.info("Pi-hole container successfully reloaded active memory.")
+    except Exception as err:
+        logger.warning(f"Failed to signal Pi-hole via docker exec (ensure container is named 'pihole'): {err}")
+
+
 # ------------------------------------------------------------------------------
 # Entry Point
 # ------------------------------------------------------------------------------
@@ -458,12 +493,14 @@ def main() -> None:
 
     try:
         with get_db_connection(DB_PATH) as conn:
+            optimize_database_indexes(conn)
             step_1_process_exact_blocked_domains(conn)
             step_2_process_regex_deny(conn)
             step_3_purge_empty_blocklists(conn)
             step_4_process_minor_blocklists(conn)
             step_5_purge_minor_blocklists_from_db(conn)
 
+        reload_pihole_docker()
         step_6_git_commit_and_push()
 
         logger.info("Pipeline execution finished cleanly and successfully.")
