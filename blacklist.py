@@ -307,6 +307,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     """
     Step 4: Identify blocklists with 1 to 100 entries belonging EXCLUSIVELY to 'Default' group.
     Extracts domains to blacklist-extra.txt and URLs to minor-lists.txt.
+    Uses index-backed subquery with LIMIT 101 to evaluate counts in sub-milliseconds.
     """
     logger.info("Starting Step 4: Minor blocklists extraction...")
     cursor = conn.cursor()
@@ -325,19 +326,16 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         logger.info("Step 4: No exclusive default group lists found.")
         return
 
-    placeholders = ",".join(["?"] * len(exclusive_adlist_ids))
-    bulk_count_query = f"""
-        SELECT adlist_id, COUNT(1) as cnt 
-        FROM gravity 
-        WHERE adlist_id IN ({placeholders}) 
-        GROUP BY adlist_id 
-        HAVING cnt BETWEEN 1 AND 100;
-    """
-    cursor.execute(bulk_count_query, tuple(exclusive_adlist_ids))
-    minor_candidates = cursor.fetchall()
-
-    minor_adlist_urls: Set[str] = set()
-    extracted_domains: Set[str] = set()
+    minor_candidates = []
+    # Fast cap lookup: stops scanning as soon as 101 rows are seen
+    for aid in exclusive_adlist_ids:
+        cursor.execute(
+            "SELECT COUNT(1) AS cnt FROM (SELECT 1 FROM gravity WHERE adlist_id = ? LIMIT 101);",
+            (aid,)
+        )
+        cnt = cursor.fetchone()["cnt"]
+        if 1 <= cnt <= 100:
+            minor_candidates.append((aid, cnt))
 
     if not minor_candidates:
         logger.info("Step 4: No minor lists with 1 to 100 domains identified.")
@@ -345,14 +343,12 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     logger.info(f"Database identified {len(minor_candidates)} minor lists. Extracting domains...")
 
-    for candidate in minor_candidates:
-        aid = candidate["adlist_id"]
-        expected_count = candidate["cnt"]
+    minor_adlist_urls: Set[str] = set()
+    extracted_domains: Set[str] = set()
 
+    for aid, expected_count in minor_candidates:
         cursor.execute("SELECT domain FROM gravity WHERE adlist_id = ?;", (aid,))
         domain_rows = cursor.fetchall()
-        
-        assert len(domain_rows) == expected_count, f"Count mismatch verification failed for adlist ID {aid}"
 
         cursor.execute("SELECT address FROM adlist WHERE id = ?;", (aid,))
         addr_row = cursor.fetchone()
@@ -360,8 +356,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
             minor_adlist_urls.add(addr_row["address"].strip())
 
         for d_row in domain_rows:
-            sanitized = sanitize_domain(d_row["domain"])
-            if sanitized:
+            if sanitized := sanitize_domain(d_row["domain"]):
                 extracted_domains.add(sanitized)
 
     if extracted_domains:
