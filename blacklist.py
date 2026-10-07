@@ -312,19 +312,32 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
 
-    # Single-pass SQL query using direct JOIN and GROUP BY
-    query = """
-        SELECT g.adlist_id, a.address, COUNT(g.domain) AS domain_count
-        FROM gravity g
-        JOIN adlist_by_group abg ON g.adlist_id = abg.adlist_id
-        JOIN adlist a ON g.adlist_id = a.id
-        GROUP BY g.adlist_id
-        HAVING COUNT(DISTINCT abg.group_id) = 1 
-           AND MAX(abg.group_id) = ?
-           AND domain_count BETWEEN 1 AND 100;
+    query_exclusive_default = """
+        SELECT adlist_id 
+        FROM adlist_by_group 
+        GROUP BY adlist_id 
+        HAVING COUNT(DISTINCT group_id) = 1 AND MAX(group_id) = ?
     """
-    cursor.execute(query, (default_group_id,))
+    cursor.execute(query_exclusive_default, (default_group_id,))
+    exclusive_adlist_ids = [row["adlist_id"] for row in cursor.fetchall()]
+
+    if not exclusive_adlist_ids:
+        logger.info("Step 4: No exclusive default group lists found.")
+        return
+
+    placeholders = ",".join(["?"] * len(exclusive_adlist_ids))
+    bulk_count_query = f"""
+        SELECT adlist_id, COUNT(1) as cnt 
+        FROM gravity 
+        WHERE adlist_id IN ({placeholders}) 
+        GROUP BY adlist_id 
+        HAVING cnt BETWEEN 1 AND 100;
+    """
+    cursor.execute(bulk_count_query, tuple(exclusive_adlist_ids))
     minor_candidates = cursor.fetchall()
+
+    minor_adlist_urls: Set[str] = set()
+    extracted_domains: Set[str] = set()
 
     if not minor_candidates:
         logger.info("Step 4: No minor lists with 1 to 100 domains identified.")
@@ -332,17 +345,23 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     logger.info(f"Database identified {len(minor_candidates)} minor lists. Extracting domains...")
 
-    minor_adlist_urls: Set[str] = set()
-    extracted_domains: Set[str] = set()
-
     for candidate in minor_candidates:
         aid = candidate["adlist_id"]
-        if candidate["address"]:
-            minor_adlist_urls.add(candidate["address"].strip())
+        expected_count = candidate["cnt"]
 
         cursor.execute("SELECT domain FROM gravity WHERE adlist_id = ?;", (aid,))
-        for d_row in cursor.fetchall():
-            if sanitized := sanitize_domain(d_row["domain"]):
+        domain_rows = cursor.fetchall()
+        
+        assert len(domain_rows) == expected_count, f"Count mismatch verification failed for adlist ID {aid}"
+
+        cursor.execute("SELECT address FROM adlist WHERE id = ?;", (aid,))
+        addr_row = cursor.fetchone()
+        if addr_row and addr_row["address"]:
+            minor_adlist_urls.add(addr_row["address"].strip())
+
+        for d_row in domain_rows:
+            sanitized = sanitize_domain(d_row["domain"])
+            if sanitized:
                 extracted_domains.add(sanitized)
 
     if extracted_domains:
@@ -361,6 +380,50 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         logger.info("Step 4 minor blocklist extraction completed.")
     else:
         logger.info("Step 4: No minor lists met all criteria.")
+
+
+def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
+    """
+    Step 5: Purge adlists matching URLs in minor-lists.txt from gravity.db in-place.
+    Executes set-based bulk deletes instead of row-by-row loops.
+    """
+    logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
+    minor_urls = list(read_text_file_lines(MINOR_LISTS_FILE))
+
+    if not minor_urls:
+        logger.info("No minor list URLs found to purge.")
+        return
+
+    cursor = conn.cursor()
+    chunk_size = 500
+    all_target_ids: List[int] = []
+
+    # Batch lookup adlist IDs matching the stored URLs
+    for i in range(0, len(minor_urls), chunk_size):
+        chunk = minor_urls[i:i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        cursor.execute(
+            f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", 
+            tuple(chunk)
+        )
+        all_target_ids.extend([row["id"] for row in cursor.fetchall()])
+
+    if not all_target_ids:
+        logger.info("Step 5: No matching adlist IDs found in database for deletion.")
+        return
+
+    logger.info(f"Executing set-based purge for {len(all_target_ids)} minor adlists...")
+
+    # Bulk deletion in chunks
+    for i in range(0, len(all_target_ids), chunk_size):
+        chunk = all_target_ids[i:i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        cursor.execute(f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});", tuple(chunk))
+        cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});", tuple(chunk))
+        cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
+
+    conn.commit()
+    logger.info(f"Step 5 completed. Purged {len(all_target_ids)} matching minor adlists from database.")
 
 
 def step_6_git_commit_and_push() -> None:
