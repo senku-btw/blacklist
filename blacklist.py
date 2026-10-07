@@ -25,7 +25,7 @@ from contextlib import contextmanager
 # Configuration & Constants
 # ------------------------------------------------------------------------------
 DB_PATH = Path("/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db")
-BASE_DIR = Path.cwd()
+BASE_DIR = Path(__file__).resolve().parent
 
 # Output Directories
 BLACKLISTS_DIR = BASE_DIR / "blacklists"
@@ -53,7 +53,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger("gravity_maintenance")
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------------------
@@ -80,7 +80,7 @@ def retry_on_db_lock(max_retries: int = 5, initial_delay: float = 1.0):
                 except sqlite3.OperationalError as err:
                     if "locked" in str(err).lower() or "busy" in str(err).lower():
                         if attempt == max_retries:
-                            logger.error(f"Database locked after {max_retries} attempts.")
+                            logger.error(f"Database locked after {max_retries} attempts. Aborting.")
                             raise
                         logger.warning(f"Database busy (attempt {attempt}/{max_retries}). Retrying in {delay:.1f}s...")
                         time.sleep(delay)
@@ -185,12 +185,11 @@ def read_text_file_lines(file_path: Path) -> Set[str]:
 
 
 def atomic_write_file(file_path: Path, lines: List[str]) -> None:
-    """Atomically writes sorted lines to a file with backup safety."""
+    """Atomically writes sorted lines to a file with hardware sync and backup safety."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = file_path.with_suffix(".tmp")
     backup_path = file_path.with_suffix(".bak")
 
-    # Create backup if original exists
     if file_path.exists():
         shutil.copy2(file_path, backup_path)
 
@@ -198,9 +197,11 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
         with open(temp_path, "w", encoding="utf-8") as f:
             for line in lines:
                 f.write(f"{line}\n")
+            f.flush()
+            os.fsync(f.fileno())  # Guarantee flush to physical disk
+
         temp_path.replace(file_path)
 
-        # Cleanup backup on success
         if backup_path.exists():
             backup_path.unlink()
 
@@ -208,7 +209,6 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
     except Exception as err:
         if temp_path.exists():
             temp_path.unlink()
-        # Restore backup if write failed
         if backup_path.exists() and not file_path.exists():
             shutil.move(backup_path, file_path)
         logger.error(f"Failed atomic write to {file_path}: {err}")
@@ -452,6 +452,10 @@ def step_6_git_commit_and_push() -> None:
     """Checks git repository state, commits, and pushes to remote with safeguards."""
     logger.info("Starting Step 6: Git version control push...")
 
+    if not shutil.which("git"):
+        logger.warning("Git executable not found in PATH. Skipping git operations.")
+        return
+
     if not (BASE_DIR / ".git").exists():
         logger.warning("Directory is not a Git repository. Skipping git operations.")
         return
@@ -459,6 +463,16 @@ def step_6_git_commit_and_push() -> None:
     hex_commit_msg = secrets.token_hex(4)[:7]
 
     try:
+        # Pre-emptive pull to avoid push conflicts on diverged branches
+        subprocess.run(
+            ["git", "pull", "--rebase"],
+            cwd=str(BASE_DIR),
+            check=False,
+            timeout=15,
+            capture_output=True,
+            text=True
+        )
+
         status_output = subprocess.check_output(
             ["git", "status", "--porcelain"],
             cwd=str(BASE_DIR),
@@ -474,7 +488,8 @@ def step_6_git_commit_and_push() -> None:
             ["git", "add", "blacklists/", "regex/", "minor-lists.txt"],
             cwd=str(BASE_DIR),
             check=True,
-            timeout=15
+            timeout=15,
+            capture_output=True
         )
 
         staged_status = subprocess.check_output(
@@ -492,32 +507,40 @@ def step_6_git_commit_and_push() -> None:
             ["git", "commit", "-m", hex_commit_msg],
             cwd=str(BASE_DIR),
             check=True,
-            timeout=15
+            timeout=15,
+            capture_output=True
         )
 
         subprocess.run(
             ["git", "push"],
             cwd=str(BASE_DIR),
             check=True,
-            timeout=30
+            timeout=30,
+            capture_output=True,
+            text=True
         )
         logger.info("Git push executed successfully.")
 
     except subprocess.TimeoutExpired as err:
         logger.error(f"Git execution timed out: {err}")
     except subprocess.CalledProcessError as err:
-        logger.error(f"Git execution failed: {err}")
+        logger.error(f"Git execution failed: {err.stderr or err.output}")
 
 
 def restart_pihole_services() -> None:
     """Restarts Pi-hole DNS engine via Docker, verifying container state beforehand."""
     logger.info("Checking Pi-hole Docker container status...")
+    
+    if not shutil.which("docker"):
+        logger.warning("Docker executable not found in PATH. Skipping DNS restart.")
+        return
+        
     try:
-        # Verify pihole container is running
         check_running = subprocess.check_output(
             ["docker", "inspect", "-f", "{{.State.Running}}", "pihole"],
             text=True,
-            timeout=10
+            timeout=10,
+            stderr=subprocess.STDOUT
         ).strip()
 
         if check_running != "true":
@@ -529,14 +552,16 @@ def restart_pihole_services() -> None:
             ["docker", "exec", "pihole", "pihole", "restartdns"], 
             check=True,
             timeout=30,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
+            capture_output=True,
+            text=True
         )
         logger.info("Pi-hole DNS engine restarted successfully.")
     except subprocess.TimeoutExpired:
         logger.error("Docker command timed out.")
+    except subprocess.CalledProcessError as err:
+        logger.error(f"Failed to restart Pi-hole via docker exec: {err.output}")
     except Exception as err:
-        logger.warning(f"Failed to restart Pi-hole via docker exec: {err}")
+        logger.warning(f"Unexpected error restarting Pi-hole: {err}")
 
 
 # ------------------------------------------------------------------------------
