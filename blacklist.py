@@ -432,6 +432,7 @@ def step_6_git_commit_and_push() -> None:
     logger.info(f"Generated commit identifier: {hex_commit_msg}")
 
     try:
+        # Check if the repository has any changes at all (including untracked files)
         status_output = subprocess.check_output(
             ["git", "status", "--porcelain"],
             cwd=str(BASE_DIR),
@@ -442,16 +443,18 @@ def step_6_git_commit_and_push() -> None:
             logger.info("No changes detected in Git repository. Skipping commit/push.")
             return
 
+        # Only add the specific lists managed by this script
         subprocess.run(["git", "add", "blacklists/", "regex/", "minor-lists.txt"], cwd=str(BASE_DIR), check=True)
 
+        # Check specifically if any files were staged for commit
         staged_status = subprocess.check_output(
-            ["git", "status", "--porcelain"],
+            ["git", "diff", "--staged", "--name-only"],
             cwd=str(BASE_DIR),
             text=True
         )
 
         if not staged_status.strip():
-            logger.info("No staged changes to commit.")
+            logger.info("No staged changes to commit (only untracked files present). Skipping commit.")
             return
 
         subprocess.run(["git", "commit", "-m", hex_commit_msg], cwd=str(BASE_DIR), check=True)
