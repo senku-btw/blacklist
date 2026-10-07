@@ -310,11 +310,15 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     columns = [col["name"] for col in cursor.fetchall()]
     type_filter = " AND a.type = 0" if "type" in columns else ""
 
+    # Optimized query using NOT EXISTS to prevent I/O exhaustion
     empty_candidates_query = f"""
         SELECT a.id 
         FROM adlist a 
-        LEFT JOIN gravity g ON a.id = g.adlist_id 
-        WHERE g.adlist_id IS NULL {type_filter};
+        WHERE NOT EXISTS (
+            SELECT 1 
+            FROM gravity g 
+            WHERE g.adlist_id = a.id
+        ) {type_filter};
     """
     cursor.execute(empty_candidates_query)
     empty_ids = [row["id"] for row in cursor.fetchall()]
