@@ -3,19 +3,22 @@
 Pi-hole gravity.db Maintenance and Blacklist Extraction Suite.
 
 Direct in-place database processor for Pi-hole gravity.db.
-Extracts, sanitizes, and cleans database entries directly, utilizing 
-SQLite transaction rollbacks, index optimization, PRAGMA tuning, and WAL checkpoints.
+Extracts, sanitizes, and cleans database entries directly using set-based
+SQL queries, retry decorators for lock resilience, and pre-flight health checks.
 """
 
 import os
 import sys
 import re
+import time
+import signal
 import sqlite3
 import logging
 import secrets
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Set, List, Optional, FrozenSet
+from typing import Set, List, Optional, FrozenSet, Callable, Any
 from contextlib import contextmanager
 
 # ------------------------------------------------------------------------------
@@ -39,6 +42,9 @@ DOMAIN_REGEX = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$"
 )
 
+# Minimum required free space (50 MB)
+MIN_FREE_DISK_BYTES = 50 * 1024 * 1024
+
 # Logging Setup
 logging.basicConfig(
     level=logging.INFO,
@@ -51,51 +57,94 @@ logger = logging.getLogger("gravity_maintenance")
 
 
 # ------------------------------------------------------------------------------
+# Robustness Helpers: Retries, Signals, and Health Checks
+# ------------------------------------------------------------------------------
+def handle_shutdown_signals(signum: int, frame: Any) -> None:
+    """Graceful signal handler to prevent database/file state corruption."""
+    logger.warning(f"Received signal {signum}. Terminating process safely...")
+    sys.exit(128 + signum)
+
+
+signal.signal(signal.SIGINT, handle_shutdown_signals)
+signal.signal(signal.SIGTERM, handle_shutdown_signals)
+
+
+def retry_on_db_lock(max_retries: int = 5, initial_delay: float = 1.0):
+    """Decorator to retry SQLite operations on lock/busy errors with backoff."""
+    def decorator(func: Callable):
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except sqlite3.OperationalError as err:
+                    if "locked" in str(err).lower() or "busy" in str(err).lower():
+                        if attempt == max_retries:
+                            logger.error(f"Database locked after {max_retries} attempts.")
+                            raise
+                        logger.warning(f"Database busy (attempt {attempt}/{max_retries}). Retrying in {delay:.1f}s...")
+                        time.sleep(delay)
+                        delay *= 2
+                    else:
+                        raise
+        return wrapper
+    return decorator
+
+
+def check_preflight_conditions(db_path: Path) -> None:
+    """Verify disk space, database existence, and DB file integrity."""
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database file missing at path: {db_path}")
+
+    # Check disk space
+    stat = shutil.disk_usage(db_path.parent)
+    if stat.free < MIN_FREE_DISK_BYTES:
+        raise OSError(f"Insufficient disk space. Free: {stat.free / 1024 / 1024:.2f} MB required: 50 MB")
+
+    # Check database integrity
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10.0)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA quick_check;")
+        result = cursor.fetchone()
+        conn.close()
+        if not result or result[0] != "ok":
+            raise sqlite3.DatabaseError(f"Database integrity check failed: {result}")
+        logger.info("Pre-flight database integrity check passed.")
+    except Exception as err:
+        raise sqlite3.DatabaseError(f"Failed database health check: {err}")
+
+
+# ------------------------------------------------------------------------------
 # In-Place Database Connection & Helper Functions
 # ------------------------------------------------------------------------------
 @contextmanager
 def get_db_connection(db_path: Path):
     """
     Context manager for editing gravity.db directly in-place.
-    Applies high-performance pragmas for batch operations and ensures a WAL 
-    checkpoint on exit so changes sync to gravity.db immediately.
+    Applies high-performance pragmas and non-blocking WAL flushing.
     """
-    assert db_path.exists(), f"Database file missing at path: {db_path}"
-    
+    check_preflight_conditions(db_path)
+
     conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=60.0)
     conn.row_factory = sqlite3.Row
     try:
-        # Performance and safety PRAGMAs
         conn.execute("PRAGMA busy_timeout = 60000;")
         conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA temp_store = MEMORY;")
         yield conn
     except Exception as err:
         conn.rollback()
-        logger.error(f"Database transaction error encountered, rolling back: {err}")
+        logger.error(f"Database transaction error, rolling back: {err}")
         raise
     finally:
         try:
-            # Force WAL to merge into main database file before closing
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
         except Exception as e:
-            logger.warning(f"WAL checkpoint failed (safe to ignore): {e}")
+            logger.warning(f"WAL passive checkpoint warning: {e}")
         conn.close()
-
-
-def optimize_database_indexes(conn: sqlite3.Connection) -> None:
-    """
-    Creates an index on adlist_id in the gravity table if it doesn't already exist.
-    This turns full table scans into millisecond lookups.
-    """
-    logger.info("Verifying database indexes for performance optimization...")
-    try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_script_adlist_id ON gravity(adlist_id);")
-        conn.commit()
-        logger.info("Database indexes are optimized.")
-    except Exception as err:
-        logger.warning(f"Could not create index (script will run slowly): {err}")
 
 
 def sanitize_domain(raw_domain: str) -> Optional[str]:
@@ -103,7 +152,6 @@ def sanitize_domain(raw_domain: str) -> Optional[str]:
     if not raw_domain or not isinstance(raw_domain, str):
         return None
     cleaned = re.sub(r"[\x00-\x1F\x7F-\x9F\u200b-\u200d\ufeff]", "", raw_domain).strip().lower()
-    
     if not cleaned or not DOMAIN_REGEX.match(cleaned):
         return None
     return cleaned
@@ -137,18 +185,32 @@ def read_text_file_lines(file_path: Path) -> Set[str]:
 
 
 def atomic_write_file(file_path: Path, lines: List[str]) -> None:
-    """Atomically writes sorted lines to a file via a temporary file."""
+    """Atomically writes sorted lines to a file with backup safety."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = file_path.with_suffix(".tmp")
+    backup_path = file_path.with_suffix(".bak")
+
+    # Create backup if original exists
+    if file_path.exists():
+        shutil.copy2(file_path, backup_path)
+
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             for line in lines:
                 f.write(f"{line}\n")
         temp_path.replace(file_path)
+
+        # Cleanup backup on success
+        if backup_path.exists():
+            backup_path.unlink()
+
         logger.info(f"Successfully wrote {len(lines)} entries to {file_path}")
     except Exception as err:
         if temp_path.exists():
             temp_path.unlink()
+        # Restore backup if write failed
+        if backup_path.exists() and not file_path.exists():
+            shutil.move(backup_path, file_path)
         logger.error(f"Failed atomic write to {file_path}: {err}")
         raise
 
@@ -157,21 +219,15 @@ def get_default_group_id(cursor: sqlite3.Cursor) -> int:
     """Retrieve the ID of the 'Default' group from gravity.db."""
     cursor.execute("SELECT id FROM 'group' WHERE name = 'Default';")
     row = cursor.fetchone()
-    if row:
-        return int(row["id"])
-    return 0
+    return int(row["id"]) if row else 0
 
 
 # ------------------------------------------------------------------------------
 # Core Processing Steps
 # ------------------------------------------------------------------------------
+@retry_on_db_lock()
 def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
-    """
-    Step 1: Extract exact blocked domains matching criteria:
-    - Belongs to 'Default' group
-    - Has an empty comment
-    Combine with existing blacklist.txt, overwrite file, and delete extracted DB entries in place.
-    """
+    """Step 1: Extract exact blocked domains matching default group with no comments."""
     logger.info("Starting Step 1: Exact blocked domains processing...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
@@ -192,25 +248,20 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
 
     for row in rows:
         domain_id = row["id"]
-        sanitized = sanitize_domain(row["domain"])
-        if sanitized:
+        if sanitized := sanitize_domain(row["domain"]):
             extracted_domains.add(sanitized)
             domain_ids_to_delete.append(domain_id)
 
-    db_immutable_set: FrozenSet[str] = frozenset(extracted_domains)
-    logger.info(f"Step 1 DB query yielded {len(db_immutable_set)} matching domains.")
+    logger.info(f"Step 1 DB query yielded {len(extracted_domains)} matching domains.")
 
     existing_domains = read_text_file_lines(BLACKLIST_FILE)
     sanitized_existing = {s for line in existing_domains if (s := sanitize_domain(line))}
-    file_immutable_set: FrozenSet[str] = frozenset(sanitized_existing)
 
-    combined_set: FrozenSet[str] = db_immutable_set.union(file_immutable_set)
-    alphabetized_list = sorted(combined_set)
-
-    atomic_write_file(BLACKLIST_FILE, alphabetized_list)
+    combined_set = extracted_domains.union(sanitized_existing)
+    atomic_write_file(BLACKLIST_FILE, sorted(combined_set))
 
     if domain_ids_to_delete:
-        logger.info(f"Deleting {len(domain_ids_to_delete)} transferred entries from gravity.db in-place...")
+        logger.info(f"Deleting {len(domain_ids_to_delete)} transferred entries from gravity.db...")
         chunk_size = 500
         for i in range(0, len(domain_ids_to_delete), chunk_size):
             chunk = domain_ids_to_delete[i:i + chunk_size]
@@ -221,12 +272,9 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
         logger.info("Step 1 database purge completed successfully.")
 
 
+@retry_on_db_lock()
 def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
-    """
-    Step 2: Parse regex blacklist database fetching all regex deny entries (type=3),
-    excluding any belonging to group 'healthcheck'.
-    Overwrite regex/regex_deny.txt (backup only, no DB deletion).
-    """
+    """Step 2: Backup regex deny rules (excluding 'healthcheck' group)."""
     logger.info("Starting Step 2: Regex deny rules processing...")
     cursor = conn.cursor()
 
@@ -249,25 +297,15 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
         cursor.execute(query)
 
     rows = cursor.fetchall()
-    processed_regexes: Set[str] = set()
+    processed_regexes = {sanitized for row in rows if (sanitized := sanitize_regex(row["domain"]))}
 
-    for row in rows:
-        sanitized = sanitize_regex(row["domain"])
-        if sanitized:
-            processed_regexes.add(sanitized)
-
-    immutable_regex_set: FrozenSet[str] = frozenset(processed_regexes)
-    alphabetized_regexes = sorted(immutable_regex_set)
-
-    atomic_write_file(REGEX_FILE, alphabetized_regexes)
-    logger.info(f"Step 2 completed. {len(alphabetized_regexes)} regex entries saved to {REGEX_FILE}.")
+    atomic_write_file(REGEX_FILE, sorted(processed_regexes))
+    logger.info(f"Step 2 completed. {len(processed_regexes)} regex entries saved.")
 
 
+@retry_on_db_lock()
 def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
-    """
-    Step 3: Identify and purge adlists that have 0 domain entries in gravity.
-    Uses NOT EXISTS to leverage idx_script_adlist_id directly without full table scans.
-    """
+    """Step 3: Purge adlists that have 0 domain entries in gravity."""
     logger.info("Starting Step 3: Empty blocklists purge verification...")
     cursor = conn.cursor()
 
@@ -276,22 +314,19 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     type_filter = " AND a.type = 0" if "type" in columns else ""
 
     empty_candidates_query = f"""
-        SELECT a.id, a.address 
+        SELECT a.id 
         FROM adlist a 
-        WHERE NOT EXISTS (
-            SELECT 1 FROM gravity g WHERE g.adlist_id = a.id
-        ){type_filter};
+        LEFT JOIN gravity g ON a.id = g.adlist_id 
+        WHERE g.adlist_id IS NULL {type_filter};
     """
     cursor.execute(empty_candidates_query)
-    empty_candidates = cursor.fetchall()
+    empty_ids = [row["id"] for row in cursor.fetchall()]
 
-    if not empty_candidates:
-        logger.info("Step 3: No empty blocklist candidates identified by the database.")
+    if not empty_ids:
+        logger.info("Step 3: No empty blocklists found.")
         return
 
-    empty_ids = [row["id"] for row in empty_candidates]
-    logger.info(f"Database identified {len(empty_ids)} empty blocklists. Purging...")
-
+    logger.info(f"Purging {len(empty_ids)} empty blocklists from database...")
     chunk_size = 500
     for i in range(0, len(empty_ids), chunk_size):
         chunk = empty_ids[i:i + chunk_size]
@@ -303,12 +338,9 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     logger.info(f"Step 3 completed. Purged {len(empty_ids)} empty adlists.")
 
 
+@retry_on_db_lock()
 def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
-    """
-    Step 4: Identify blocklists with 1 to 100 entries belonging EXCLUSIVELY to 'Default' group.
-    Extracts domains to blacklist-extra.txt and URLs to minor-lists.txt.
-    Uses index-backed subquery with LIMIT 101 to evaluate counts in sub-milliseconds.
-    """
+    """Step 4: Extract minor blocklists (1 to 100 entries) belonging to Default group."""
     logger.info("Starting Step 4: Minor blocklists extraction...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
@@ -326,37 +358,42 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         logger.info("Step 4: No exclusive default group lists found.")
         return
 
-    minor_candidates = []
-    # Fast cap lookup: stops scanning as soon as 101 rows are seen
-    for aid in exclusive_adlist_ids:
-        cursor.execute(
-            "SELECT COUNT(1) AS cnt FROM (SELECT 1 FROM gravity WHERE adlist_id = ? LIMIT 101);",
-            (aid,)
-        )
-        cnt = cursor.fetchone()["cnt"]
-        if 1 <= cnt <= 100:
-            minor_candidates.append((aid, cnt))
+    minor_candidates: List[int] = []
+    chunk_size = 500
+    for i in range(0, len(exclusive_adlist_ids), chunk_size):
+        chunk = exclusive_adlist_ids[i:i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        batch_count_query = f"""
+            SELECT adlist_id, COUNT(*) AS cnt 
+            FROM gravity 
+            WHERE adlist_id IN ({placeholders}) 
+            GROUP BY adlist_id 
+            HAVING cnt BETWEEN 1 AND 100;
+        """
+        cursor.execute(batch_count_query, tuple(chunk))
+        minor_candidates.extend([row["adlist_id"] for row in cursor.fetchall()])
 
     if not minor_candidates:
         logger.info("Step 4: No minor lists with 1 to 100 domains identified.")
         return
 
-    logger.info(f"Database identified {len(minor_candidates)} minor lists. Extracting domains...")
+    logger.info(f"Identified {len(minor_candidates)} minor lists. Extracting domains...")
 
     minor_adlist_urls: Set[str] = set()
     extracted_domains: Set[str] = set()
 
-    for aid, expected_count in minor_candidates:
-        cursor.execute("SELECT domain FROM gravity WHERE adlist_id = ?;", (aid,))
-        domain_rows = cursor.fetchall()
+    for i in range(0, len(minor_candidates), chunk_size):
+        chunk = minor_candidates[i:i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
 
-        cursor.execute("SELECT address FROM adlist WHERE id = ?;", (aid,))
-        addr_row = cursor.fetchone()
-        if addr_row and addr_row["address"]:
-            minor_adlist_urls.add(addr_row["address"].strip())
+        cursor.execute(f"SELECT address FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
+        for row in cursor.fetchall():
+            if row["address"]:
+                minor_adlist_urls.add(row["address"].strip())
 
-        for d_row in domain_rows:
-            if sanitized := sanitize_domain(d_row["domain"]):
+        cursor.execute(f"SELECT domain FROM gravity WHERE adlist_id IN ({placeholders});", tuple(chunk))
+        for row in cursor.fetchall():
+            if sanitized := sanitize_domain(row["domain"]):
                 extracted_domains.add(sanitized)
 
     if extracted_domains:
@@ -371,17 +408,12 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
         combined_extra_domains = sanitized_existing_extra.union(extracted_domains)
         atomic_write_file(EXTRA_FILE, sorted(combined_extra_domains))
-        
         logger.info("Step 4 minor blocklist extraction completed.")
-    else:
-        logger.info("Step 4: No minor lists met all criteria.")
 
 
+@retry_on_db_lock()
 def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
-    """
-    Step 5: Purge adlists matching URLs in minor-lists.txt from gravity.db in-place.
-    Executes set-based bulk deletes instead of row-by-row loops.
-    """
+    """Step 5: Purge minor blocklists matching URLs in minor-lists.txt."""
     logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
     minor_urls = list(read_text_file_lines(MINOR_LISTS_FILE))
 
@@ -393,23 +425,18 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     chunk_size = 500
     all_target_ids: List[int] = []
 
-    # Batch lookup adlist IDs matching the stored URLs
     for i in range(0, len(minor_urls), chunk_size):
         chunk = minor_urls[i:i + chunk_size]
         placeholders = ",".join(["?"] * len(chunk))
-        cursor.execute(
-            f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", 
-            tuple(chunk)
-        )
+        cursor.execute(f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", tuple(chunk))
         all_target_ids.extend([row["id"] for row in cursor.fetchall()])
 
     if not all_target_ids:
         logger.info("Step 5: No matching adlist IDs found in database for deletion.")
         return
 
-    logger.info(f"Executing set-based purge for {len(all_target_ids)} minor adlists...")
+    logger.info(f"Executing purge for {len(all_target_ids)} minor adlists...")
 
-    # Bulk deletion in chunks
     for i in range(0, len(all_target_ids), chunk_size):
         chunk = all_target_ids[i:i + chunk_size]
         placeholders = ",".join(["?"] * len(chunk))
@@ -418,63 +445,86 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
         cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
 
     conn.commit()
-    logger.info(f"Step 5 completed. Purged {len(all_target_ids)} matching minor adlists from database.")
+    logger.info(f"Step 5 completed. Purged {len(all_target_ids)} matching minor adlists.")
 
 
 def step_6_git_commit_and_push() -> None:
-    """
-    Generates a random 7-character hexadecimal commit hash message,
-    checks for repository changes, commits, and safely pushes to remote.
-    """
+    """Checks git repository state, commits, and pushes to remote with safeguards."""
     logger.info("Starting Step 6: Git version control push...")
 
+    if not (BASE_DIR / ".git").exists():
+        logger.warning("Directory is not a Git repository. Skipping git operations.")
+        return
+
     hex_commit_msg = secrets.token_hex(4)[:7]
-    logger.info(f"Generated commit identifier: {hex_commit_msg}")
 
     try:
-        # Check if the repository has any changes at all (including untracked files)
         status_output = subprocess.check_output(
             ["git", "status", "--porcelain"],
             cwd=str(BASE_DIR),
-            text=True
+            text=True,
+            timeout=15
         )
 
         if not status_output.strip():
             logger.info("No changes detected in Git repository. Skipping commit/push.")
             return
 
-        # Only add the specific lists managed by this script
-        subprocess.run(["git", "add", "blacklists/", "regex/", "minor-lists.txt"], cwd=str(BASE_DIR), check=True)
+        subprocess.run(
+            ["git", "add", "blacklists/", "regex/", "minor-lists.txt"],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=15
+        )
 
-        # Check specifically if any files were staged for commit
         staged_status = subprocess.check_output(
             ["git", "diff", "--staged", "--name-only"],
             cwd=str(BASE_DIR),
-            text=True
+            text=True,
+            timeout=15
         )
 
         if not staged_status.strip():
-            logger.info("No staged changes to commit (only untracked files present). Skipping commit.")
+            logger.info("No staged changes to commit. Skipping commit.")
             return
 
-        subprocess.run(["git", "commit", "-m", hex_commit_msg], cwd=str(BASE_DIR), check=True)
-        logger.info(f"Git commit created with message: '{hex_commit_msg}'")
+        subprocess.run(
+            ["git", "commit", "-m", hex_commit_msg],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=15
+        )
 
-        subprocess.run(["git", "push"], cwd=str(BASE_DIR), check=True)
+        subprocess.run(
+            ["git", "push"],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=30
+        )
         logger.info("Git push executed successfully.")
 
+    except subprocess.TimeoutExpired as err:
+        logger.error(f"Git execution timed out: {err}")
     except subprocess.CalledProcessError as err:
         logger.error(f"Git execution failed: {err}")
-        raise
 
 
 def restart_pihole_services() -> None:
-    """
-    Restarts the Pi-hole DNS and FTL engine via Docker to ensure active memory reflects changes.
-    Includes a 30-second timeout safeguard.
-    """
-    logger.info("Restarting Pi-hole DNS and FTL engine via Docker...")
+    """Restarts Pi-hole DNS engine via Docker, verifying container state beforehand."""
+    logger.info("Checking Pi-hole Docker container status...")
     try:
+        # Verify pihole container is running
+        check_running = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.State.Running}}", "pihole"],
+            text=True,
+            timeout=10
+        ).strip()
+
+        if check_running != "true":
+            logger.warning("Pi-hole Docker container is not running. Skipping DNS restart.")
+            return
+
+        logger.info("Restarting Pi-hole DNS engine via Docker...")
         subprocess.run(
             ["docker", "exec", "pihole", "pihole", "restartdns"], 
             check=True,
@@ -482,11 +532,11 @@ def restart_pihole_services() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE
         )
-        logger.info("Pi-hole DNS and FTL engine restarted successfully.")
+        logger.info("Pi-hole DNS engine restarted successfully.")
     except subprocess.TimeoutExpired:
-        logger.error("Docker command timed out after 30 seconds while restarting Pi-hole services.")
+        logger.error("Docker command timed out.")
     except Exception as err:
-        logger.warning(f"Failed to restart Pi-hole via docker exec (ensure container is named 'pihole'): {err}")
+        logger.warning(f"Failed to restart Pi-hole via docker exec: {err}")
 
 
 # ------------------------------------------------------------------------------
@@ -497,11 +547,9 @@ def main() -> None:
 
     BLACKLISTS_DIR.mkdir(parents=True, exist_ok=True)
     REGEX_DIR.mkdir(parents=True, exist_ok=True)
-    assert DB_PATH.exists(), f"Target database does not exist: {DB_PATH}"
 
     try:
         with get_db_connection(DB_PATH) as conn:
-            optimize_database_indexes(conn)
             step_1_process_exact_blocked_domains(conn)
             step_2_process_regex_deny(conn)
             step_3_purge_empty_blocklists(conn)
@@ -515,7 +563,7 @@ def main() -> None:
         sys.exit(0)
 
     except Exception as fatal_err:
-        logger.critical(f"Fatal error encountered during execution pipeline: {fatal_err}", exc_info=True)
+        logger.critical(f"Fatal error encountered during pipeline execution: {fatal_err}", exc_info=True)
         sys.exit(1)
 
 
