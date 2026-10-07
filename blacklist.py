@@ -92,7 +92,7 @@ def retry_on_db_lock(max_retries: int = 5, initial_delay: float = 1.0):
 
 
 def check_preflight_conditions(db_path: Path) -> None:
-    """Verify disk space, database existence, and DB file integrity."""
+    """Verify disk space, database existence, and DB file readability."""
     if not db_path.exists():
         raise FileNotFoundError(f"Database file missing at path: {db_path}")
 
@@ -101,16 +101,13 @@ def check_preflight_conditions(db_path: Path) -> None:
     if stat.free < MIN_FREE_DISK_BYTES:
         raise OSError(f"Insufficient disk space. Free: {stat.free / 1024 / 1024:.2f} MB required: 50 MB")
 
-    # Check database integrity
+    # Fast database read check (replaces the I/O-heavy PRAGMA quick_check)
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10.0)
         cursor = conn.cursor()
-        cursor.execute("PRAGMA quick_check;")
-        result = cursor.fetchone()
+        cursor.execute("SELECT 1 FROM info LIMIT 1;")
         conn.close()
-        if not result or result[0] != "ok":
-            raise sqlite3.DatabaseError(f"Database integrity check failed: {result}")
-        logger.info("Pre-flight database integrity check passed.")
+        logger.info("Pre-flight database read check passed.")
     except Exception as err:
         raise sqlite3.DatabaseError(f"Failed database health check: {err}")
 
