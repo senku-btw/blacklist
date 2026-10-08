@@ -466,7 +466,7 @@ def step_6_git_commit_and_push() -> None:
 
     try:
         pull_run = subprocess.run(
-            ["git", "pull", "--rebase"],
+            ["git", "pull", "--rebase", "--autostash"],
             cwd=str(BASE_DIR),
             check=False,
             timeout=15,
