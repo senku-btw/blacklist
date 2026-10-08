@@ -523,7 +523,7 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
         return
 
     cursor = conn.cursor()
-    all_target_ids: List[int] = []
+    target_adlist_ids: List[int] = []
 
     for i in range(0, len(minor_urls), 500):
         chunk = minor_urls[i:i + 500]
@@ -531,16 +531,16 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
         cursor.execute(
             f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", tuple(chunk)
         )
-        all_target_ids.extend([row["id"] for row in cursor.fetchall()])
+        target_adlist_ids.extend([int(row["id"]) for row in cursor.fetchall()])
 
-    if not all_target_ids:
+    if not target_adlist_ids:
         logger.info("Step 5: No matching adlist IDs found in database for deletion.")
         return
 
-    logger.info("Executing purge for %s minor adlists...", len(all_target_ids))
+    logger.info("Executing purge for %s minor adlists...", len(target_adlist_ids))
     with conn:
-        for i in range(0, len(all_target_ids), 500):
-            chunk = all_target_ids[i:i + 500]
+        for i in range(0, len(target_adlist_ids), 500):
+            chunk = target_adlist_ids[i:i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             cursor.execute(
                 f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});",
@@ -552,7 +552,7 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
             )
             cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
 
-    logger.info("Step 5 completed. Purged %s matching minor adlists.", len(all_target_ids))
+    logger.info("Step 5 completed. Purged %s matching minor adlists.", len(target_adlist_ids))
 
 
 def restart_pihole_services() -> None:
