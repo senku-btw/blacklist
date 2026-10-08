@@ -131,6 +131,10 @@ def get_db_connection(db_path: Path):
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA temp_store = MEMORY;")
+
+        # Create an index on adlist_id to make filtering/grouping instant
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_gravity_adlist_id ON gravity (adlist_id);")
+
         yield conn
     except Exception as err:
         conn.rollback()
@@ -302,47 +306,40 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
 
 @retry_on_db_lock()
 def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
-    """Step 3: Purge adlists that have 0 domain entries in gravity using micro-queries."""
+    """Step 3: Purge adlists that have 0 domain entries in gravity using an indexed lookup."""
     logger.info("Starting Step 3: Empty blocklists purge verification...")
     cursor = conn.cursor()
 
     cursor.execute("PRAGMA table_info(adlist);")
     columns = [col["name"] for col in cursor.fetchall()]
-    type_filter = " WHERE type = 0" if "type" in columns else ""
+    type_filter = " AND a.type = 0" if "type" in columns else ""
 
-    # Fetch adlist IDs first to avoid locking the database with a massive JOIN
-    cursor.execute(f"SELECT id FROM adlist{type_filter};")
-    all_adlists = [row["id"] for row in cursor.fetchall()]
-    
-    empty_ids = []
-    
-    # 1. Micro-query read loop
-    for adlist_id in all_adlists:
-        cursor.execute("SELECT 1 FROM gravity WHERE adlist_id = ? LIMIT 1;", (adlist_id,))
-        if not cursor.fetchone():
-            empty_ids.append(adlist_id)
-        # Yield I/O to the system so Pi-hole doesn't freeze
-        time.sleep(0.02)
+    # Instant index-only scan to locate adlists not present in gravity
+    empty_candidates_query = f"""
+        SELECT a.id 
+        FROM adlist a 
+        WHERE a.id NOT IN (
+            SELECT DISTINCT adlist_id 
+            FROM gravity 
+            WHERE adlist_id IS NOT NULL
+        ) {type_filter};
+    """
+    cursor.execute(empty_candidates_query)
+    empty_ids = [row["id"] for row in cursor.fetchall()]
 
     if not empty_ids:
         logger.info("Step 3: No empty blocklists found.")
         return
 
-    logger.info(f"Purging {len(empty_ids)} empty blocklists from database in chunks...")
-    
-    # 2. Micro-query delete loop
-    chunk_size = 25  # Reduced chunk size for hardware safety
+    logger.info(f"Purging {len(empty_ids)} empty blocklists from database...")
+    chunk_size = 500
     for i in range(0, len(empty_ids), chunk_size):
         chunk = empty_ids[i:i + chunk_size]
         placeholders = ",".join(["?"] * len(chunk))
-        
         cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});", tuple(chunk))
         cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
-        
-        # Commit per chunk and pause heavily to allow WAL flushing
-        conn.commit()
-        time.sleep(0.5)
 
+    conn.commit()
     logger.info(f"Step 3 completed. Purged {len(empty_ids)} empty adlists.")
 
 
