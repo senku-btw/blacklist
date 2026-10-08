@@ -566,11 +566,11 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     target_ids: List[int] = []
 
     for i in range(0, len(minor_urls), 500):
-        chunk = minor_urls[i : i + 500]
-        placeholders = ",".join(["?"] * len(chunk))
+        url_chunk = minor_urls[i : i + 500]
+        placeholders = ",".join(["?"] * len(url_chunk))
         cursor.execute(
             f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});",
-            tuple(chunk),
+            tuple(url_chunk),
         )
         fetched_rows = cursor.fetchall()
         target_ids.extend([int(row["id"]) for row in fetched_rows])
@@ -582,18 +582,18 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     logger.info("Executing purge for %s minor adlists...", len(target_ids))
     with conn:
         for i in range(0, len(target_ids), 500):
-            chunk = target_ids[i : i + 500]
-            placeholders = ",".join(["?"] * len(chunk))
+            id_chunk = target_ids[i : i + 500]
+            placeholders = ",".join(["?"] * len(id_chunk))
             cursor.execute(
                 f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});",
-                tuple(chunk),
+                tuple(id_chunk),
             )
             cursor.execute(
                 f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});",
-                tuple(chunk),
+                tuple(id_chunk),
             )
             cursor.execute(
-                f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk)
+                f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(id_chunk)
             )
 
     logger.info("Step 5 completed. Purged %s matching minor adlists.", len(target_ids))
