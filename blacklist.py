@@ -328,7 +328,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
 
 @retry_on_db_lock()
 def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
-    logger.info("Starting Step 4: Minor blocklists extraction...")
+    logger.info("Starting Step 4: Minor blocklists extraction and fresh HTTP fetch...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
 
@@ -341,60 +341,80 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     cursor.execute(query_exclusive_default, (default_group_id,))
     exclusive_adlist_ids = [row["adlist_id"] for row in cursor.fetchall()]
 
-    if not exclusive_adlist_ids:
-        logger.info("Step 4: No exclusive default group lists found.")
-        return
-
-    minor_candidates: Set[int] = set()
-    chunk_size = 500
-    for i in range(0, len(exclusive_adlist_ids), chunk_size):
-        chunk = exclusive_adlist_ids[i:i + chunk_size]
-        placeholders = ",".join(["?"] * len(chunk))
-        batch_count_query = f"""
-            SELECT adlist_id
-            FROM gravity 
-            WHERE adlist_id IN ({placeholders}) 
-            GROUP BY adlist_id 
-            HAVING COUNT(*) BETWEEN 1 AND 100;
-        """
-        cursor.execute(batch_count_query, tuple(chunk))
-        minor_candidates.update(row["adlist_id"] for row in cursor.fetchall())
-
-    if not minor_candidates:
-        logger.info("Step 4: No minor lists with 1 to 100 domains identified.")
-        return
-
-    logger.info(f"Identified {len(minor_candidates)} minor lists. Extracting domains...")
-    minor_candidates_list = list(minor_candidates)
-    minor_adlist_urls: Set[str] = set()
+    new_minor_urls: Set[str] = set()
     extracted_domains: Set[str] = set()
+    chunk_size = 500
 
-    for i in range(0, len(minor_candidates_list), chunk_size):
-        chunk = minor_candidates_list[i:i + chunk_size]
-        placeholders = ",".join(["?"] * len(chunk))
+    # 1. Identify any *new* minor lists currently pending in gravity.db
+    if exclusive_adlist_ids:
+        minor_candidates: Set[int] = set()
+        for i in range(0, len(exclusive_adlist_ids), chunk_size):
+            chunk = exclusive_adlist_ids[i:i + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            batch_count_query = f"""
+                SELECT adlist_id
+                FROM gravity 
+                WHERE adlist_id IN ({placeholders}) 
+                GROUP BY adlist_id 
+                HAVING COUNT(*) BETWEEN 1 AND 100;
+            """
+            cursor.execute(batch_count_query, tuple(chunk))
+            minor_candidates.update(row["adlist_id"] for row in cursor.fetchall())
 
-        cursor.execute(f"SELECT address FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
-        minor_adlist_urls.update(row["address"].strip() for row in cursor.fetchall() if row["address"])
+        if minor_candidates:
+            logger.info(f"Identified {len(minor_candidates)} new minor lists in DB.")
+            minor_candidates_list = list(minor_candidates)
+            for i in range(0, len(minor_candidates_list), chunk_size):
+                chunk = minor_candidates_list[i:i + chunk_size]
+                placeholders = ",".join(["?"] * len(chunk))
+                cursor.execute(f"SELECT address FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
+                new_minor_urls.update(row["address"].strip() for row in cursor.fetchall() if row["address"])
 
-        cursor.execute(f"SELECT domain FROM gravity WHERE adlist_id IN ({placeholders});", tuple(chunk))
-        for row in cursor.fetchall():
-            if sanitized := sanitize_domain(row["domain"]):
-                extracted_domains.add(sanitized)
+    if not new_minor_urls:
+        logger.info("Step 4: No new minor lists with 1 to 100 domains identified in DB.")
 
+    # 2. Combine new URLs with previously saved URLs from minor-lists.txt
+    existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
+    all_minor_urls = existing_minor_urls.union(new_minor_urls)
+
+    if not all_minor_urls:
+        logger.info("No minor lists available to process. Skipping HTTP fetch.")
+        return
+
+    if new_minor_urls:
+        atomic_write_file(MINOR_LISTS_FILE, sorted(all_minor_urls))
+
+    # 3. Fetch contents freshly via HTTP/HTTPS, supporting RAW and HOSTS formats
+    logger.info(f"Fetching fresh contents over HTTP for {len(all_minor_urls)} minor lists...")
+    for url in all_minor_urls:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (compatible; Pi-hole Maintenance)'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content = response.read().decode('utf-8', errors='ignore')
+                for line in content.splitlines():
+                    # Strip comments and handle /etc/hosts format (e.g. "0.0.0.0 bad.com")
+                    clean_line = line.split('#')[0].strip()
+                    if not clean_line:
+                        continue
+                    parts = clean_line.split()
+                    target = parts[1] if len(parts) >= 2 and parts[0] in ("0.0.0.0", "127.0.0.1") else parts[0]
+                    
+                    if sanitized := sanitize_domain(target):
+                        extracted_domains.add(sanitized)
+        except Exception as e:
+            logger.warning(f"Failed to fetch minor list URL {url}: {e}")
+
+    # 4. Merge newly fetched domains with existing extra blacklist file
     if extracted_domains:
-        logger.info(f"Extracted {len(extracted_domains)} domains from {len(minor_adlist_urls)} minor lists.")
-
-        existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
-        combined_minor_urls = existing_minor_urls.union(minor_adlist_urls)
-        atomic_write_file(MINOR_LISTS_FILE, sorted(combined_minor_urls))
-
         existing_extra_domains = read_text_file_lines(EXTRA_FILE)
         sanitized_existing_extra = {s for line in existing_extra_domains if (s := sanitize_domain(line))}
         combined_extra_domains = sanitized_existing_extra.union(extracted_domains)
         
         atomic_write_file(EXTRA_FILE, sorted(combined_extra_domains))
-        logger.info("Step 4 minor blocklist extraction completed.")
-
+        logger.info(f"Step 4 completed. Extracted {len(extracted_domains)} active domains from minor URLs.")
+    else:
+        logger.info("Step 4 completed. No valid domains extracted from minor URLs.")
+        
 @retry_on_db_lock()
 def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
