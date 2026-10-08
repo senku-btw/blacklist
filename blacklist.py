@@ -23,7 +23,7 @@ import ssl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Set, List, Optional, Callable, Any
-from contextlib import contextmanager, closing
+from contextlib import contextmanager
 
 # ------------------------------------------------------------------------------
 # Enterprise Configuration & Environment Overrides
@@ -260,8 +260,9 @@ def fetch_single_list(url: str) -> Set[str]:
     ssl_context = ssl.create_default_context()
 
     try:
-        conn = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS, context=ssl_context)
-        with closing(conn) as response:
+        with urllib.request.urlopen(
+            req, timeout=HTTP_TIMEOUT_SECONDS, context=ssl_context
+        ) as response:
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_RESPONSE_BYTES:
                 logger.warning(
@@ -541,7 +542,10 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
         for i in range(0, len(all_target_ids), 500):
             chunk = all_target_ids[i:i + 500]
             placeholders = ",".join(["?"] * len(chunk))
-            cursor.execute(f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});", tuple(chunk))
+            cursor.execute(
+                f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});",
+                tuple(chunk)
+            )
             cursor.execute(
                 f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});",
                 tuple(chunk)
