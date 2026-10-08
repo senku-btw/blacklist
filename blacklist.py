@@ -100,7 +100,12 @@ def check_preflight_conditions(db_path: Path) -> None:
 # ------------------------------------------------------------------------------
 @contextmanager
 def get_db_connection(db_path: Path):
+    """
+    Context manager for editing gravity.db directly in-place.
+    Applies high-performance pragmas and strict memory cache boundaries.
+    """
     check_preflight_conditions(db_path)
+
     conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=60.0)
     conn.row_factory = sqlite3.Row
     try:
@@ -108,7 +113,12 @@ def get_db_connection(db_path: Path):
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
+        
+        # Safely allocate exactly 10MB of RAM for caching (negative value = kilobytes)
+        conn.execute("PRAGMA cache_size = -10000;") 
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_gravity_adlist_id ON gravity (adlist_id);")
+
         yield conn
     except Exception as err:
         conn.rollback()
@@ -116,10 +126,13 @@ def get_db_connection(db_path: Path):
         raise
     finally:
         try:
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+            # Upgraded from PASSIVE: TRUNCATE flushes data and zeroes out the -wal file
+            # to permanently recover physical SD card space.
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         except Exception as e:
-            logger.warning(f"WAL passive checkpoint warning: {e}")
+            logger.warning(f"WAL truncate checkpoint warning: {e}")
         conn.close()
+
 
 def sanitize_domain(raw_domain: str) -> Optional[str]:
     if not raw_domain or not isinstance(raw_domain, str):
@@ -151,7 +164,25 @@ def read_text_file_lines(file_path: Path) -> Set[str]:
         raise
 
 def atomic_write_file(file_path: Path, lines: List[str]) -> None:
+    """
+    Atomically writes sorted lines to a file, verifying content differences
+    first to prevent unnecessary SD card degradation.
+    """
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Generate the exact string block we intend to write
+    new_content = "".join(f"{line}\n" for line in lines)
+
+    # Prevent write-cycle burn if the file already exists and matches exactly
+    if file_path.exists():
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                if f.read() == new_content:
+                    logger.info(f"Content unchanged. Skipped disk write for {file_path.name}")
+                    return
+        except Exception as e:
+            logger.warning(f"Failed to read existing file for comparison, proceeding with write: {e}")
+
     temp_path = file_path.with_suffix(".tmp")
     backup_path = file_path.with_suffix(".bak")
 
@@ -160,7 +191,7 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
 
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
-            f.writelines(f"{line}\n" for line in lines)
+            f.write(new_content)
             f.flush()
             os.fsync(f.fileno())
 
@@ -177,7 +208,7 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
             shutil.move(backup_path, file_path)
         logger.error(f"Failed atomic write to {file_path}: {err}")
         raise
-
+        
 def get_default_group_id(cursor: sqlite3.Cursor) -> int:
     cursor.execute("SELECT id FROM 'group' WHERE name = 'Default';")
     row = cursor.fetchone()
