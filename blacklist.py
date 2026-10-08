@@ -185,7 +185,11 @@ def sanitize_domain(raw_domain: str) -> Optional[str]:
     """Clean and validate domain strings against standard patterns."""
     if not raw_domain or not isinstance(raw_domain, str):
         return None
-    cleaned = re.sub(r"[\x00-\x1F\x7F-\x9F\u200b-\u200d\ufeff]", "", raw_domain).strip().lower()
+    cleaned = (
+        re.sub(r"[\x00-\x1F\x7F-\x9F\u200b-\u200d\ufeff]", "", raw_domain)
+        .strip()
+        .lower()
+    )
     return cleaned if cleaned and DOMAIN_REGEX.match(cleaned) else None
 
 
@@ -225,10 +229,14 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
         try:
             with open(file_path, "r", encoding="utf-8") as file:
                 if file.read() == new_content:
-                    logger.info("Content unchanged. Skipped disk write for %s", file_path.name)
+                    logger.info(
+                        "Content unchanged. Skipped disk write for %s", file_path.name
+                    )
                     return
         except IOError as err:
-            logger.warning("Failed reading file for content comparison, writing: %s", err)
+            logger.warning(
+                "Failed reading file for content comparison, writing: %s", err
+            )
 
     temp_path = file_path.with_suffix(".tmp")
     backup_path = file_path.with_suffix(".bak")
@@ -274,7 +282,9 @@ def fetch_single_list(url: str) -> Set[str]:
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_RESPONSE_BYTES:
                 logger.warning(
-                    "Skipping %s: Payload exceeds allowed size (%s bytes)", url, content_length
+                    "Skipping %s: Payload exceeds allowed size (%s bytes)",
+                    url,
+                    content_length,
                 )
                 return extracted
 
@@ -282,7 +292,8 @@ def fetch_single_list(url: str) -> Set[str]:
             if len(raw_bytes) > MAX_RESPONSE_BYTES:
                 logger.warning(
                     "Skipping %s: Response body exceeded limit of %s bytes",
-                    url, MAX_RESPONSE_BYTES
+                    url,
+                    MAX_RESPONSE_BYTES,
                 )
                 return extracted
 
@@ -344,25 +355,30 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
     logger.info("Step 1 DB query yielded %s matching domains.", len(extracted_domains))
 
     existing_domains = read_text_file_lines(BLACKLIST_FILE)
-    sanitized_existing = {s for line in existing_domains if (s := sanitize_domain(line))}
+    sanitized_existing = {
+        s for line in existing_domains if (s := sanitize_domain(line))
+    }
     combined_set = extracted_domains.union(sanitized_existing)
 
     if extracted_domains or not BLACKLIST_FILE.exists():
         atomic_write_file(BLACKLIST_FILE, sorted(combined_set))
 
     if domain_ids_to_delete:
-        logger.info("Deleting %s transferred entries from gravity.db...", len(domain_ids_to_delete))
+        logger.info(
+            "Deleting %s transferred entries from gravity.db...",
+            len(domain_ids_to_delete),
+        )
         with conn:
             for i in range(0, len(domain_ids_to_delete), 500):
-                chunk = domain_ids_to_delete[i:i + 500]
+                chunk = domain_ids_to_delete[i : i + 500]
                 placeholders = ",".join(["?"] * len(chunk))
                 cursor.execute(
                     f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders});",
-                    tuple(chunk)
+                    tuple(chunk),
                 )
                 cursor.execute(
                     f"DELETE FROM domainlist WHERE id IN ({placeholders});",
-                    tuple(chunk)
+                    tuple(chunk),
                 )
         logger.info("Step 1 database purge completed successfully.")
 
@@ -391,7 +407,9 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
         cursor.execute("SELECT DISTINCT domain FROM domainlist WHERE type = 3;")
 
     rows = cursor.fetchall()
-    processed_regexes = {sanitized for row in rows if (sanitized := sanitize_regex(row["domain"]))}
+    processed_regexes = {
+        sanitized for row in rows if (sanitized := sanitize_regex(row["domain"]))
+    }
 
     atomic_write_file(REGEX_FILE, sorted(processed_regexes))
     logger.info("Step 2 completed. %s regex entries saved.", len(processed_regexes))
@@ -426,13 +444,15 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     logger.info("Purging %s empty blocklists from database...", len(empty_ids))
     with conn:
         for i in range(0, len(empty_ids), 500):
-            chunk = empty_ids[i:i + 500]
+            chunk = empty_ids[i : i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             cursor.execute(
                 f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});",
-                tuple(chunk)
+                tuple(chunk),
             )
-            cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
+            cursor.execute(
+                f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk)
+            )
     logger.info("Step 3 completed. Purged %s empty adlists.", len(empty_ids))
 
 
@@ -451,14 +471,16 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         HAVING COUNT(DISTINCT group_id) = 1 AND MAX(group_id) = ?
     """
     cursor.execute(query_exclusive_default, (default_group_id,))
-    exclusive_adlist_ids: List[int] = [int(row["adlist_id"]) for row in cursor.fetchall()]
+    exclusive_adlist_ids: List[int] = [
+        int(row["adlist_id"]) for row in cursor.fetchall()
+    ]
 
     new_minor_urls: Set[str] = set()
 
     if exclusive_adlist_ids:
         minor_candidates: Set[int] = set()
         for i in range(0, len(exclusive_adlist_ids), 500):
-            chunk = exclusive_adlist_ids[i:i + 500]
+            chunk = exclusive_adlist_ids[i : i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             batch_query = f"""
                 SELECT adlist_id
@@ -474,17 +496,22 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
             logger.info("Identified %s new minor lists in DB.", len(minor_candidates))
             minor_candidates_list = list(minor_candidates)
             for i in range(0, len(minor_candidates_list), 500):
-                chunk = minor_candidates_list[i:i + 500]
+                chunk = minor_candidates_list[i : i + 500]
                 placeholders = ",".join(["?"] * len(chunk))
                 cursor.execute(
-                    f"SELECT address FROM adlist WHERE id IN ({placeholders});", tuple(chunk)
+                    f"SELECT address FROM adlist WHERE id IN ({placeholders});",
+                    tuple(chunk),
                 )
                 new_minor_urls.update(
-                    row["address"].strip() for row in cursor.fetchall() if row["address"]
+                    row["address"].strip()
+                    for row in cursor.fetchall()
+                    if row["address"]
                 )
 
     if not new_minor_urls:
-        logger.info("Step 4: No new minor lists with 1 to 100 domains identified in DB.")
+        logger.info(
+            "Step 4: No new minor lists with 1 to 100 domains identified in DB."
+        )
 
     existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
     all_minor_urls = existing_minor_urls.union(new_minor_urls)
@@ -498,23 +525,28 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     logger.info(
         "Fetching fresh contents concurrently over HTTP for %s minor lists...",
-        len(all_minor_urls)
+        len(all_minor_urls),
     )
     extracted_domains: Set[str] = set()
 
     with ThreadPoolExecutor(max_workers=MAX_HTTP_WORKERS) as executor:
-        future_to_url = {executor.submit(fetch_single_list, url): url for url in all_minor_urls}
+        future_to_url = {
+            executor.submit(fetch_single_list, url): url for url in all_minor_urls
+        }
         for future in as_completed(future_to_url):
             extracted_domains.update(future.result())
 
     if extracted_domains:
         existing_extra_domains = read_text_file_lines(EXTRA_FILE)
-        san_extra = {s for line in existing_extra_domains if (s := sanitize_domain(line))}
+        san_extra = {
+            s for line in existing_extra_domains if (s := sanitize_domain(line))
+        }
         combined_extra_domains = san_extra.union(extracted_domains)
 
         atomic_write_file(EXTRA_FILE, sorted(combined_extra_domains))
         logger.info(
-            "Step 4 completed. Extracted %s active domains from minor URLs.", len(extracted_domains)
+            "Step 4 completed. Extracted %s active domains from minor URLs.",
+            len(extracted_domains),
         )
     else:
         logger.info("Step 4 completed. No valid domains extracted from minor URLs.")
@@ -534,10 +566,11 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     target_ids: List[int] = []
 
     for i in range(0, len(minor_urls), 500):
-        chunk = minor_urls[i:i + 500]
+        chunk = minor_urls[i : i + 500]
         placeholders = ",".join(["?"] * len(chunk))
         cursor.execute(
-            f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", tuple(chunk)
+            f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});",
+            tuple(chunk),
         )
         fetched_rows = cursor.fetchall()
         target_ids.extend([int(row["id"]) for row in fetched_rows])
@@ -549,17 +582,19 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     logger.info("Executing purge for %s minor adlists...", len(target_ids))
     with conn:
         for i in range(0, len(target_ids), 500):
-            chunk = target_ids[i:i + 500]
+            chunk = target_ids[i : i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             cursor.execute(
                 f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});",
-                tuple(chunk)
+                tuple(chunk),
             )
             cursor.execute(
                 f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});",
-                tuple(chunk)
+                tuple(chunk),
             )
-            cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
+            cursor.execute(
+                f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk)
+            )
 
     logger.info("Step 5 completed. Purged %s matching minor adlists.", len(target_ids))
 
@@ -582,11 +617,14 @@ def restart_pihole_services() -> None:
 
         if check_running != "true":
             logger.warning(
-                "Pi-hole container '%s' is not running. Skipping restart.", CONTAINER_NAME
+                "Pi-hole container '%s' is not running. Skipping restart.",
+                CONTAINER_NAME,
             )
             return
 
-        logger.info("Restarting Pi-hole DNS engine on container '%s'...", CONTAINER_NAME)
+        logger.info(
+            "Restarting Pi-hole DNS engine on container '%s'...", CONTAINER_NAME
+        )
         subprocess.run(
             ["docker", "exec", CONTAINER_NAME, "pihole", "restartdns"],
             check=True,
@@ -596,7 +634,9 @@ def restart_pihole_services() -> None:
         )
         logger.info("Pi-hole DNS engine restarted successfully.")
     except subprocess.TimeoutExpired:
-        logger.error("Docker execution timed out during container query or DNS restart.")
+        logger.error(
+            "Docker execution timed out during container query or DNS restart."
+        )
     except subprocess.CalledProcessError as err:
         logger.error("Failed to restart Pi-hole via docker exec: %s", err.output)
     except OSError as err:
@@ -630,7 +670,7 @@ def step_6_git_commit_and_push() -> None:
         if pull_run.returncode != 0:
             logger.error(
                 "Git pull failed. Aborting commit to protect repository state. Details: %s",
-                pull_run.stderr
+                pull_run.stderr,
             )
             return
 
@@ -646,7 +686,11 @@ def step_6_git_commit_and_push() -> None:
             return
 
         subprocess.run(
-            ["git", "add", "-A"], cwd=str(BASE_DIR), check=True, timeout=15, capture_output=True
+            ["git", "add", "-A"],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=15,
+            capture_output=True,
         )
 
         staged_status = subprocess.check_output(
@@ -669,7 +713,11 @@ def step_6_git_commit_and_push() -> None:
         )
 
         subprocess.run(
-            ["git", "push"], cwd=str(BASE_DIR), check=True, timeout=30, capture_output=True
+            ["git", "push"],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=30,
+            capture_output=True,
         )
         logger.info("Git push executed successfully.")
 
@@ -705,7 +753,9 @@ def main() -> None:
 
     except Exception as fatal_err:  # pylint: disable=broad-exception-caught
         logger.critical(
-            "Fatal error encountered during pipeline execution: %s", fatal_err, exc_info=True
+            "Fatal error encountered during pipeline execution: %s",
+            fatal_err,
+            exc_info=True,
         )
         sys.exit(1)
 
