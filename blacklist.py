@@ -66,6 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("GravityPipeline")
 
+
 # ------------------------------------------------------------------------------
 # System & Robustness Helpers
 # ------------------------------------------------------------------------------
@@ -73,6 +74,7 @@ def handle_shutdown_signals(signum: int, _frame: Any) -> None:
     """Safely handle incoming shutdown signals like SIGINT and SIGTERM."""
     logger.warning("Received shutdown signal (%s). Exiting safely...", signum)
     sys.exit(128 + signum)
+
 
 signal.signal(signal.SIGINT, handle_shutdown_signals)
 signal.signal(signal.SIGTERM, handle_shutdown_signals)
@@ -400,11 +402,11 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     type_filter = " AND a.type = 0" if "type" in columns else ""
 
     empty_candidates_query = f"""
-        SELECT a.id 
-        FROM adlist a 
+        SELECT a.id
+        FROM adlist a
         WHERE a.id NOT IN (
-            SELECT DISTINCT adlist_id 
-            FROM gravity 
+            SELECT DISTINCT adlist_id
+            FROM gravity
             WHERE adlist_id IS NOT NULL
         ) {type_filter};
     """
@@ -437,9 +439,9 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     default_group_id = get_default_group_id(cursor)
 
     query_exclusive_default = """
-        SELECT adlist_id 
-        FROM adlist_by_group 
-        GROUP BY adlist_id 
+        SELECT adlist_id
+        FROM adlist_by_group
+        GROUP BY adlist_id
         HAVING COUNT(DISTINCT group_id) = 1 AND MAX(group_id) = ?
     """
     cursor.execute(query_exclusive_default, (default_group_id,))
@@ -454,9 +456,9 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
             placeholders = ",".join(["?"] * len(chunk))
             batch_query = f"""
                 SELECT adlist_id
-                FROM gravity 
-                WHERE adlist_id IN ({placeholders}) 
-                GROUP BY adlist_id 
+                FROM gravity
+                WHERE adlist_id IN ({placeholders})
+                GROUP BY adlist_id
                 HAVING COUNT(*) BETWEEN 1 AND 100;
             """
             cursor.execute(batch_query, tuple(chunk))
