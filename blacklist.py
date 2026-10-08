@@ -465,6 +465,7 @@ def step_6_git_commit_and_push() -> None:
     hex_commit_msg = secrets.token_hex(4)[:7]
 
     try:
+        # Autostash unstaged modifications during pull to prevent rebase collisions
         pull_run = subprocess.run(
             ["git", "pull", "--rebase", "--autostash"],
             cwd=str(BASE_DIR),
@@ -489,8 +490,9 @@ def step_6_git_commit_and_push() -> None:
             logger.info("No changes detected in Git repository. Skipping commit/push.")
             return
 
+        # Stage ALL tracked and untracked repository changes
         subprocess.run(
-            ["git", "add", "blacklists/", "regex/", "minor-lists.txt"],
+            ["git", "add", "-A"],
             cwd=str(BASE_DIR),
             check=True,
             timeout=15,
