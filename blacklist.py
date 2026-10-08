@@ -611,7 +611,8 @@ def step_6_git_commit_and_push() -> None:
     hex_commit_msg = secrets.token_hex(4)[:7]
 
     try:
-        pull_run = subprocess.run(isort_safe_cmd := ["git", "pull", "--rebase", "--autostash"],
+        pull_run = subprocess.run(
+            ["git", "pull", "--rebase", "--autostash"],
             cwd=str(BASE_DIR),
             check=False,
             timeout=20,
