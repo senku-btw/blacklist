@@ -130,7 +130,9 @@ def get_db_connection(db_path: Path):
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
-        conn.execute("PRAGMA temp_store = MEMORY;")
+        
+        # REMOVED: conn.execute("PRAGMA temp_store = MEMORY;")
+        # Removing this prevents Raspberry Pi memory exhaustion during index creation.
 
         # Create an index on adlist_id to make filtering/grouping instant
         conn.execute("CREATE INDEX IF NOT EXISTS idx_gravity_adlist_id ON gravity (adlist_id);")
