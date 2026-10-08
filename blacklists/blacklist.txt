@@ -1161,6 +1161,7 @@ clk.tradedoubler.com
 clkmon.com
 clkrev.com
 clktag.com
+cloudflareinsights.com
 cloudfront.net
 cloudservices.roku.com
 clovenetwork.com
@@ -4260,6 +4261,7 @@ yololike.space
 youhodler.com
 youknowbest.com
 youtube.com
+youtubei.googleapis.com
 yoyo.com
 yp.com
 yr.c.lencr.org
