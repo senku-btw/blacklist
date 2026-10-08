@@ -54,7 +54,7 @@ DOMAIN_REGEX = re.compile(
 )
 
 # Safeguards & Performance Parameters
-MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", 50 * 1024 * 1024))
+MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", str(50 * 1024 * 1024)))
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "10"))
 MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "12"))
 MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(20 * 1024 * 1024)))
@@ -69,8 +69,9 @@ logger = logging.getLogger("GravityPipeline")
 # ------------------------------------------------------------------------------
 # System & Robustness Helpers
 # ------------------------------------------------------------------------------
-def handle_shutdown_signals(signum: int, frame: Any) -> None:
-    logger.warning(f"Received shutdown signal ({signum}). Exiting safely...")
+def handle_shutdown_signals(signum: int, _frame: Any) -> None:
+    """Safely handle incoming shutdown signals like SIGINT and SIGTERM."""
+    logger.warning("Received shutdown signal (%s). Exiting safely...", signum)
     sys.exit(128 + signum)
 
 signal.signal(signal.SIGINT, handle_shutdown_signals)
@@ -78,6 +79,7 @@ signal.signal(signal.SIGTERM, handle_shutdown_signals)
 
 
 def retry_on_db_lock(max_retries: int = 5, initial_delay: float = 1.0):
+    """Decorator to retry database operations if the SQLite database is locked."""
     def decorator(func: Callable):
         def wrapper(*args, **kwargs):
             delay = initial_delay
@@ -87,37 +89,51 @@ def retry_on_db_lock(max_retries: int = 5, initial_delay: float = 1.0):
                 except sqlite3.OperationalError as err:
                     if "locked" in str(err).lower() or "busy" in str(err).lower():
                         if attempt == max_retries:
-                            logger.error(f"Database remained locked after {max_retries} attempts. Aborting.")
+                            logger.error(
+                                "Database remained locked after %s attempts. Aborting.", max_retries
+                            )
                             raise
-                        logger.warning(f"Database busy (attempt {attempt}/{max_retries}). Retrying in {delay:.1f}s...")
+                        logger.warning(
+                            "Database busy (attempt %s/%s). Retrying in %.1fs...",
+                            attempt, max_retries, delay
+                        )
                         time.sleep(delay)
                         delay *= 2
                     else:
                         raise
+            return None
         return wrapper
     return decorator
 
 
 def check_preflight_conditions(db_path: Path) -> None:
+    """Verify prerequisites like database existence and adequate disk space."""
     if not db_path.exists():
         raise FileNotFoundError(f"Database file missing at path: {db_path}")
 
     stat = shutil.disk_usage(db_path.parent)
     if stat.free < MIN_FREE_DISK_BYTES:
-        raise OSError(f"Insufficient disk space. Free: {stat.free / 1024 / 1024:.2f} MB, Required: {MIN_FREE_DISK_BYTES / 1024 / 1024:.2f} MB")
+        free_mb = stat.free / 1024 / 1024
+        req_mb = MIN_FREE_DISK_BYTES / 1024 / 1024
+        raise OSError(
+            f"Insufficient disk space. Free: {free_mb:.2f} MB, Required: {req_mb:.2f} MB"
+        )
 
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10.0)
         conn.execute("SELECT 1 FROM info LIMIT 1;")
         conn.close()
         logger.info("Pre-flight database read check passed.")
-    except Exception as err:
-        raise sqlite3.DatabaseError(f"Failed database health check: {err}")
+    except sqlite3.Error as err:
+        raise sqlite3.DatabaseError(f"Failed database health check: {err}") from err
 
 
 def ensure_database_indexes(conn: sqlite3.Connection) -> None:
+    """Ensure database possesses performance indexes before running operations."""
     cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_gravity_adlist_id';")
+    cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_gravity_adlist_id';"
+    )
     if not cursor.fetchone():
         logger.info("Index idx_gravity_adlist_id missing. Building index...")
         cursor.execute("CREATE INDEX idx_gravity_adlist_id ON gravity (adlist_id);")
@@ -128,6 +144,7 @@ def ensure_database_indexes(conn: sqlite3.Connection) -> None:
 # ------------------------------------------------------------------------------
 @contextmanager
 def get_db_connection(db_path: Path):
+    """Context manager for yielding a configured SQLite connection."""
     check_preflight_conditions(db_path)
 
     conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=60.0)
@@ -141,15 +158,15 @@ def get_db_connection(db_path: Path):
 
         ensure_database_indexes(conn)
         yield conn
-    except Exception as err:
+    except sqlite3.Error as err:
         conn.rollback()
-        logger.error(f"Database transaction error encountered, rolling back: {err}")
+        logger.error("Database transaction error encountered, rolling back: %s", err)
         raise
     finally:
         try:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        except Exception as e:
-            logger.warning(f"WAL truncate checkpoint warning: {e}")
+        except sqlite3.Error as err:
+            logger.warning("WAL truncate checkpoint warning: %s", err)
         conn.close()
 
 
@@ -157,6 +174,7 @@ def get_db_connection(db_path: Path):
 # Sanitization & Data Parsers
 # ------------------------------------------------------------------------------
 def sanitize_domain(raw_domain: str) -> Optional[str]:
+    """Clean and validate domain strings against standard patterns."""
     if not raw_domain or not isinstance(raw_domain, str):
         return None
     cleaned = re.sub(r"[\x00-\x1F\x7F-\x9F\u200b-\u200d\ufeff]", "", raw_domain).strip().lower()
@@ -164,6 +182,7 @@ def sanitize_domain(raw_domain: str) -> Optional[str]:
 
 
 def sanitize_regex(raw_regex: str) -> Optional[str]:
+    """Validate and clean raw regular expression strings."""
     if not raw_regex or not isinstance(raw_regex, str):
         return None
     cleaned = raw_regex.strip()
@@ -173,33 +192,35 @@ def sanitize_regex(raw_regex: str) -> Optional[str]:
         re.compile(cleaned)
         return cleaned
     except re.error:
-        logger.warning(f"Invalid regular expression skipped: '{cleaned}'")
+        logger.warning("Invalid regular expression skipped: '%s'", cleaned)
         return None
 
 
 def read_text_file_lines(file_path: Path) -> Set[str]:
+    """Read lines from a file path into a set, ignoring errors cleanly."""
     if not file_path.is_file():
         return set()
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            return {line.strip() for line in f if line.strip()}
-    except Exception as err:
-        logger.error(f"Failed to read file {file_path}: {err}")
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+            return {line.strip() for line in file if line.strip()}
+    except IOError as err:
+        logger.error("Failed to read file %s: %s", file_path, err)
         raise
 
 
 def atomic_write_file(file_path: Path, lines: List[str]) -> None:
+    """Write list entries atomically using a temporary file with rollback."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     new_content = "".join(f"{line}\n" for line in lines)
 
     if file_path.exists():
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                if f.read() == new_content:
-                    logger.info(f"Content unchanged. Skipped disk write for {file_path.name}")
+            with open(file_path, "r", encoding="utf-8") as file:
+                if file.read() == new_content:
+                    logger.info("Content unchanged. Skipped disk write for %s", file_path.name)
                     return
-        except Exception as e:
-            logger.warning(f"Failed reading file for content comparison, proceeding with write: {e}")
+        except IOError as err:
+            logger.warning("Failed reading file for content comparison, writing: %s", err)
 
     temp_path = file_path.with_suffix(".tmp")
     backup_path = file_path.with_suffix(".bak")
@@ -208,45 +229,52 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
         shutil.copy2(file_path, backup_path)
 
     try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-            f.flush()
-            os.fsync(f.fileno())
+        with open(temp_path, "w", encoding="utf-8") as file:
+            file.write(new_content)
+            file.flush()
+            os.fsync(file.fileno())
 
         temp_path.replace(file_path)
 
         if backup_path.exists():
             backup_path.unlink()
 
-        logger.info(f"Successfully wrote {len(lines)} entries to {file_path}")
-    except Exception as err:
+        logger.info("Successfully wrote %s entries to %s", len(lines), file_path)
+    except IOError as err:
         if temp_path.exists():
             temp_path.unlink()
         if backup_path.exists() and not file_path.exists():
             shutil.move(backup_path, file_path)
-        logger.error(f"Failed atomic write to {file_path}: {err}")
+        logger.error("Failed atomic write to %s: %s", file_path, err)
         raise
 
 
 def fetch_single_list(url: str) -> Set[str]:
+    """Worker function to download and parse remote blocklists concurrently."""
     extracted: Set[str] = set()
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; PiholeGravityPipeline/2.1)"},
     )
-    
+
     ssl_context = ssl.create_default_context()
-    
+
     try:
-        with closing(urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS, context=ssl_context)) as response:
+        conn = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS, context=ssl_context)
+        with closing(conn) as response:
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_RESPONSE_BYTES:
-                logger.warning(f"Skipping {url}: Payload exceeds maximum allowed size ({content_length} bytes)")
+                logger.warning(
+                    "Skipping %s: Payload exceeds allowed size (%s bytes)", url, content_length
+                )
                 return extracted
 
             raw_bytes = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw_bytes) > MAX_RESPONSE_BYTES:
-                logger.warning(f"Skipping {url}: Response body exceeded ceiling limit of {MAX_RESPONSE_BYTES} bytes")
+                logger.warning(
+                    "Skipping %s: Response body exceeded limit of %s bytes",
+                    url, MAX_RESPONSE_BYTES
+                )
                 return extracted
 
             text = raw_bytes.decode("utf-8", errors="ignore")
@@ -255,15 +283,19 @@ def fetch_single_list(url: str) -> Set[str]:
                 if not clean_line:
                     continue
                 parts = clean_line.split()
-                target = parts[1] if len(parts) >= 2 and parts[0] in ("0.0.0.0", "127.0.0.1") else parts[0]
+                if len(parts) >= 2 and parts[0] in ("0.0.0.0", "127.0.0.1"):
+                    target = parts[1]
+                else:
+                    target = parts[0]
                 if sanitized := sanitize_domain(target):
                     extracted.add(sanitized)
-    except Exception as err:
-        logger.warning(f"Failed to fetch minor list URL {url}: {err}")
+    except (urllib.error.URLError, ssl.SSLError, IOError) as err:
+        logger.warning("Failed to fetch minor list URL %s: %s", url, err)
     return extracted
 
 
 def get_default_group_id(cursor: sqlite3.Cursor) -> int:
+    """Retrieve the primary ID for the 'Default' grouping in the domain database."""
     cursor.execute("SELECT id FROM 'group' WHERE name = 'Default';")
     row = cursor.fetchone()
     return int(row["id"]) if row else 0
@@ -274,6 +306,8 @@ def get_default_group_id(cursor: sqlite3.Cursor) -> int:
 # ------------------------------------------------------------------------------
 @retry_on_db_lock()
 def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
+    # pylint: disable=too-many-locals
+    """Extract manually configured blacklisted domains and purge from the DB."""
     logger.info("Starting Step 1: Exact blocked domains processing...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
@@ -298,7 +332,7 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
             extracted_domains.add(sanitized)
             domain_ids_to_delete.append(domain_id)
 
-    logger.info(f"Step 1 DB query yielded {len(extracted_domains)} matching domains.")
+    logger.info("Step 1 DB query yielded %s matching domains.", len(extracted_domains))
 
     existing_domains = read_text_file_lines(BLACKLIST_FILE)
     sanitized_existing = {s for line in existing_domains if (s := sanitize_domain(line))}
@@ -308,18 +342,25 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
         atomic_write_file(BLACKLIST_FILE, sorted(combined_set))
 
     if domain_ids_to_delete:
-        logger.info(f"Deleting {len(domain_ids_to_delete)} transferred entries from gravity.db...")
+        logger.info("Deleting %s transferred entries from gravity.db...", len(domain_ids_to_delete))
         with conn:
             for i in range(0, len(domain_ids_to_delete), 500):
                 chunk = domain_ids_to_delete[i:i + 500]
                 placeholders = ",".join(["?"] * len(chunk))
-                cursor.execute(f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders});", tuple(chunk))
-                cursor.execute(f"DELETE FROM domainlist WHERE id IN ({placeholders});", tuple(chunk))
+                cursor.execute(
+                    f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders});",
+                    tuple(chunk)
+                )
+                cursor.execute(
+                    f"DELETE FROM domainlist WHERE id IN ({placeholders});",
+                    tuple(chunk)
+                )
         logger.info("Step 1 database purge completed successfully.")
 
 
 @retry_on_db_lock()
 def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
+    """Extract deny regular expressions ignoring health checks."""
     logger.info("Starting Step 2: Regex deny rules processing...")
     cursor = conn.cursor()
 
@@ -344,11 +385,12 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
     processed_regexes = {sanitized for row in rows if (sanitized := sanitize_regex(row["domain"]))}
 
     atomic_write_file(REGEX_FILE, sorted(processed_regexes))
-    logger.info(f"Step 2 completed. {len(processed_regexes)} regex entries saved.")
+    logger.info("Step 2 completed. %s regex entries saved.", len(processed_regexes))
 
 
 @retry_on_db_lock()
 def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
+    """Remove empty adlists from the gravity database."""
     logger.info("Starting Step 3: Empty blocklists purge verification...")
     cursor = conn.cursor()
 
@@ -372,18 +414,23 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
         logger.info("Step 3: No empty blocklists found.")
         return
 
-    logger.info(f"Purging {len(empty_ids)} empty blocklists from database...")
+    logger.info("Purging %s empty blocklists from database...", len(empty_ids))
     with conn:
         for i in range(0, len(empty_ids), 500):
             chunk = empty_ids[i:i + 500]
             placeholders = ",".join(["?"] * len(chunk))
-            cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});", tuple(chunk))
+            cursor.execute(
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});",
+                tuple(chunk)
+            )
             cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
-    logger.info(f"Step 3 completed. Purged {len(empty_ids)} empty adlists.")
+    logger.info("Step 3 completed. Purged %s empty adlists.", len(empty_ids))
 
 
 @retry_on_db_lock()
 def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
+    # pylint: disable=too-many-locals
+    """Fetch concurrent payloads of minor adlists (<= 100 entries)."""
     logger.info("Starting Step 4: Minor blocklists extraction and fresh HTTP fetch...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
@@ -415,13 +462,17 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
             minor_candidates.update(row["adlist_id"] for row in cursor.fetchall())
 
         if minor_candidates:
-            logger.info(f"Identified {len(minor_candidates)} new minor lists in DB.")
+            logger.info("Identified %s new minor lists in DB.", len(minor_candidates))
             minor_candidates_list = list(minor_candidates)
             for i in range(0, len(minor_candidates_list), 500):
                 chunk = minor_candidates_list[i:i + 500]
                 placeholders = ",".join(["?"] * len(chunk))
-                cursor.execute(f"SELECT address FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
-                new_minor_urls.update(row["address"].strip() for row in cursor.fetchall() if row["address"])
+                cursor.execute(
+                    f"SELECT address FROM adlist WHERE id IN ({placeholders});", tuple(chunk)
+                )
+                new_minor_urls.update(
+                    row["address"].strip() for row in cursor.fetchall() if row["address"]
+                )
 
     if not new_minor_urls:
         logger.info("Step 4: No new minor lists with 1 to 100 domains identified in DB.")
@@ -436,7 +487,10 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     if new_minor_urls:
         atomic_write_file(MINOR_LISTS_FILE, sorted(all_minor_urls))
 
-    logger.info(f"Fetching fresh contents concurrently over HTTP for {len(all_minor_urls)} minor lists...")
+    logger.info(
+        "Fetching fresh contents concurrently over HTTP for %s minor lists...",
+        len(all_minor_urls)
+    )
     extracted_domains: Set[str] = set()
 
     with ThreadPoolExecutor(max_workers=MAX_HTTP_WORKERS) as executor:
@@ -446,17 +500,20 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     if extracted_domains:
         existing_extra_domains = read_text_file_lines(EXTRA_FILE)
-        sanitized_existing_extra = {s for line in existing_extra_domains if (s := sanitize_domain(line))}
-        combined_extra_domains = sanitized_existing_extra.union(extracted_domains)
+        san_extra = {s for line in existing_extra_domains if (s := sanitize_domain(line))}
+        combined_extra_domains = san_extra.union(extracted_domains)
 
         atomic_write_file(EXTRA_FILE, sorted(combined_extra_domains))
-        logger.info(f"Step 4 completed. Extracted {len(extracted_domains)} active domains from minor URLs.")
+        logger.info(
+            "Step 4 completed. Extracted %s active domains from minor URLs.", len(extracted_domains)
+        )
     else:
         logger.info("Step 4 completed. No valid domains extracted from minor URLs.")
 
 
 @retry_on_db_lock()
 def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
+    """Purge identified minor lists from the local Pi-hole configuration in DB."""
     logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
     minor_urls = list(read_text_file_lines(MINOR_LISTS_FILE))
 
@@ -470,26 +527,32 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     for i in range(0, len(minor_urls), 500):
         chunk = minor_urls[i:i + 500]
         placeholders = ",".join(["?"] * len(chunk))
-        cursor.execute(f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", tuple(chunk))
+        cursor.execute(
+            f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", tuple(chunk)
+        )
         all_target_ids.extend([row["id"] for row in cursor.fetchall()])
 
     if not all_target_ids:
         logger.info("Step 5: No matching adlist IDs found in database for deletion.")
         return
 
-    logger.info(f"Executing purge for {len(all_target_ids)} minor adlists...")
+    logger.info("Executing purge for %s minor adlists...", len(all_target_ids))
     with conn:
         for i in range(0, len(all_target_ids), 500):
             chunk = all_target_ids[i:i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             cursor.execute(f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});", tuple(chunk))
-            cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});", tuple(chunk))
+            cursor.execute(
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});",
+                tuple(chunk)
+            )
             cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
 
-    logger.info(f"Step 5 completed. Purged {len(all_target_ids)} matching minor adlists.")
+    logger.info("Step 5 completed. Purged %s matching minor adlists.", len(all_target_ids))
 
 
 def restart_pihole_services() -> None:
+    """Restart Pi-hole DNS to apply database mutations directly to runtime process."""
     logger.info("Checking Pi-hole Docker container status...")
 
     if not shutil.which("docker"):
@@ -505,10 +568,12 @@ def restart_pihole_services() -> None:
         ).strip()
 
         if check_running != "true":
-            logger.warning(f"Pi-hole Docker container '{CONTAINER_NAME}' is not running. Skipping DNS restart.")
+            logger.warning(
+                "Pi-hole container '%s' is not running. Skipping restart.", CONTAINER_NAME
+            )
             return
 
-        logger.info(f"Restarting Pi-hole DNS engine on container '{CONTAINER_NAME}'...")
+        logger.info("Restarting Pi-hole DNS engine on container '%s'...", CONTAINER_NAME)
         subprocess.run(
             ["docker", "exec", CONTAINER_NAME, "pihole", "restartdns"],
             check=True,
@@ -520,12 +585,13 @@ def restart_pihole_services() -> None:
     except subprocess.TimeoutExpired:
         logger.error("Docker execution timed out during container query or DNS restart.")
     except subprocess.CalledProcessError as err:
-        logger.error(f"Failed to restart Pi-hole via docker exec: {err.output}")
-    except Exception as err:
-        logger.warning(f"Unexpected error restarting Pi-hole: {err}")
+        logger.error("Failed to restart Pi-hole via docker exec: %s", err.output)
+    except OSError as err:
+        logger.warning("Unexpected error restarting Pi-hole: %s", err)
 
 
 def step_6_git_commit_and_push() -> None:
+    """Commit configuration changes and push them dynamically to the remote Git repo."""
     logger.info("Starting Step 6: Git version control push...")
 
     if not shutil.which("git"):
@@ -549,7 +615,10 @@ def step_6_git_commit_and_push() -> None:
         )
 
         if pull_run.returncode != 0:
-            logger.error(f"Git pull failed or conflicted. Aborting commit to protect repository state. Details: {pull_run.stderr}")
+            logger.error(
+                "Git pull failed. Aborting commit to protect repository state. Details: %s",
+                pull_run.stderr
+            )
             return
 
         status_output = subprocess.check_output(
@@ -564,12 +633,7 @@ def step_6_git_commit_and_push() -> None:
             return
 
         subprocess.run(
-            ["git", "add", "-A"],
-            cwd=str(BASE_DIR),
-            check=True,
-            timeout=15,
-            capture_output=True,
-            text=True,
+            ["git", "add", "-A"], cwd=str(BASE_DIR), check=True, timeout=15, capture_output=True
         )
 
         staged_status = subprocess.check_output(
@@ -589,29 +653,24 @@ def step_6_git_commit_and_push() -> None:
             check=True,
             timeout=15,
             capture_output=True,
-            text=True,
         )
 
         subprocess.run(
-            ["git", "push"],
-            cwd=str(BASE_DIR),
-            check=True,
-            timeout=30,
-            capture_output=True,
-            text=True,
+            ["git", "push"], cwd=str(BASE_DIR), check=True, timeout=30, capture_output=True
         )
         logger.info("Git push executed successfully.")
 
     except subprocess.TimeoutExpired as err:
-        logger.error(f"Git execution timed out: {err}")
+        logger.error("Git execution timed out: %s", err)
     except subprocess.CalledProcessError as err:
-        logger.error(f"Git execution failed: {err.stderr or err.output}")
+        logger.error("Git execution failed: %s", err.stderr or err.output)
 
 
 # ------------------------------------------------------------------------------
 # Entry Point
 # ------------------------------------------------------------------------------
 def main() -> None:
+    """Bootstrap script environment and orchestrate execution process safely."""
     logger.info("Initializing Gravity Database Extraction and Maintenance Pipeline.")
 
     BLACKLISTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -631,8 +690,10 @@ def main() -> None:
         logger.info("Pipeline execution finished cleanly and successfully.")
         sys.exit(0)
 
-    except Exception as fatal_err:
-        logger.critical(f"Fatal error encountered during pipeline execution: {fatal_err}", exc_info=True)
+    except Exception as fatal_err:  # pylint: disable=broad-exception-caught
+        logger.critical(
+            "Fatal error encountered during pipeline execution: %s", fatal_err, exc_info=True
+        )
         sys.exit(1)
 
 
