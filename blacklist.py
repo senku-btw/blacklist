@@ -17,6 +17,7 @@ import logging
 import secrets
 import shutil
 import subprocess
+import urllib.request
 from pathlib import Path
 from typing import Set, List, Optional, Callable, Any
 from contextlib import contextmanager
