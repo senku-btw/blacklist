@@ -13,5 +13,6 @@ Adding this list to your Pi-hole instance takes less than 30 seconds:
 3. Paste the following URL into the **Address** field:
 
    ```text
-   https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklist.txt
+   https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt
+   https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt
    ```
