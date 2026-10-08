@@ -7,23 +7,23 @@ Extracts, sanitizes, and purges database entries directly using set-based
 SQL queries, retry decorators, concurrent HTTP list fetching, and Git synchronization.
 """
 
-import os
-import sys
-import re
-import time
-import signal
-import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 import logging
+import os
+from pathlib import Path
+import re
 import secrets
 import shutil
-import subprocess
-import urllib.request
-import urllib.error
+import signal
+import sqlite3
 import ssl
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-from typing import Set, List, Optional, Callable, Any
-from contextlib import contextmanager
+import subprocess
+import sys
+import time
+from typing import Any, Callable, List, Optional, Set
+import urllib.error
+import urllib.request
 
 # ------------------------------------------------------------------------------
 # Enterprise Configuration & Environment Overrides
