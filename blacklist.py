@@ -19,10 +19,11 @@ import shutil
 import subprocess
 import urllib.request
 import urllib.error
+import ssl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Set, List, Optional, Callable, Any
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 
 # ------------------------------------------------------------------------------
 # Enterprise Configuration & Environment Overrides
@@ -34,8 +35,11 @@ DB_PATH = Path(
         "GRAVITY_DB_PATH",
         "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db",
     )
-)
+).resolve()
+
 CONTAINER_NAME = os.getenv("PIHOLE_CONTAINER_NAME", "pihole")
+if not re.match(r"^[a-zA-Z0-9_.-]+$", CONTAINER_NAME):
+    raise ValueError(f"Invalid CONTAINER_NAME provided: {CONTAINER_NAME}")
 
 BLACKLISTS_DIR = BASE_DIR / "blacklists"
 REGEX_DIR = BASE_DIR / "regex"
@@ -53,8 +57,7 @@ DOMAIN_REGEX = re.compile(
 MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", 50 * 1024 * 1024))
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "10"))
 MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "12"))
-MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(20 * 1024 * 1024)))  # 20 MB ceiling per list
-DB_SQL_CHUNK_SIZE = int(os.getenv("DB_SQL_CHUNK_SIZE", "500"))
+MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(20 * 1024 * 1024)))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -62,7 +65,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("GravityPipeline")
-
 
 # ------------------------------------------------------------------------------
 # System & Robustness Helpers
@@ -114,7 +116,6 @@ def check_preflight_conditions(db_path: Path) -> None:
 
 
 def ensure_database_indexes(conn: sqlite3.Connection) -> None:
-    """Checks for existence before attempting index creation to avoid redundant lock contention."""
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_gravity_adlist_id';")
     if not cursor.fetchone():
@@ -136,7 +137,7 @@ def get_db_connection(db_path: Path):
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
-        conn.execute("PRAGMA cache_size = -10000;")  # 10 MB RAM cache
+        conn.execute("PRAGMA cache_size = -10000;")
 
         ensure_database_indexes(conn)
         yield conn
@@ -228,14 +229,16 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
 
 
 def fetch_single_list(url: str) -> Set[str]:
-    """Worker function to download and parse remote blocklists concurrently."""
     extracted: Set[str] = set()
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; PiholeGravityPipeline/2.0)"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; PiholeGravityPipeline/2.1)"},
     )
+    
+    ssl_context = ssl.create_default_context()
+    
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        with closing(urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS, context=ssl_context)) as response:
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_RESPONSE_BYTES:
                 logger.warning(f"Skipping {url}: Payload exceeds maximum allowed size ({content_length} bytes)")
@@ -307,8 +310,8 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
     if domain_ids_to_delete:
         logger.info(f"Deleting {len(domain_ids_to_delete)} transferred entries from gravity.db...")
         with conn:
-            for i in range(0, len(domain_ids_to_delete), DB_SQL_CHUNK_SIZE):
-                chunk = domain_ids_to_delete[i:i + DB_SQL_CHUNK_SIZE]
+            for i in range(0, len(domain_ids_to_delete), 500):
+                chunk = domain_ids_to_delete[i:i + 500]
                 placeholders = ",".join(["?"] * len(chunk))
                 cursor.execute(f"DELETE FROM domainlist_by_group WHERE domainlist_id IN ({placeholders});", tuple(chunk))
                 cursor.execute(f"DELETE FROM domainlist WHERE id IN ({placeholders});", tuple(chunk))
@@ -371,8 +374,8 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
 
     logger.info(f"Purging {len(empty_ids)} empty blocklists from database...")
     with conn:
-        for i in range(0, len(empty_ids), DB_SQL_CHUNK_SIZE):
-            chunk = empty_ids[i:i + DB_SQL_CHUNK_SIZE]
+        for i in range(0, len(empty_ids), 500):
+            chunk = empty_ids[i:i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});", tuple(chunk))
             cursor.execute(f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
@@ -398,8 +401,8 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     if exclusive_adlist_ids:
         minor_candidates: Set[int] = set()
-        for i in range(0, len(exclusive_adlist_ids), DB_SQL_CHUNK_SIZE):
-            chunk = exclusive_adlist_ids[i:i + DB_SQL_CHUNK_SIZE]
+        for i in range(0, len(exclusive_adlist_ids), 500):
+            chunk = exclusive_adlist_ids[i:i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             batch_query = f"""
                 SELECT adlist_id
@@ -414,8 +417,8 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         if minor_candidates:
             logger.info(f"Identified {len(minor_candidates)} new minor lists in DB.")
             minor_candidates_list = list(minor_candidates)
-            for i in range(0, len(minor_candidates_list), DB_SQL_CHUNK_SIZE):
-                chunk = minor_candidates_list[i:i + DB_SQL_CHUNK_SIZE]
+            for i in range(0, len(minor_candidates_list), 500):
+                chunk = minor_candidates_list[i:i + 500]
                 placeholders = ",".join(["?"] * len(chunk))
                 cursor.execute(f"SELECT address FROM adlist WHERE id IN ({placeholders});", tuple(chunk))
                 new_minor_urls.update(row["address"].strip() for row in cursor.fetchall() if row["address"])
@@ -464,8 +467,8 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
     all_target_ids: List[int] = []
 
-    for i in range(0, len(minor_urls), DB_SQL_CHUNK_SIZE):
-        chunk = minor_urls[i:i + DB_SQL_CHUNK_SIZE]
+    for i in range(0, len(minor_urls), 500):
+        chunk = minor_urls[i:i + 500]
         placeholders = ",".join(["?"] * len(chunk))
         cursor.execute(f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", tuple(chunk))
         all_target_ids.extend([row["id"] for row in cursor.fetchall()])
@@ -476,8 +479,8 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
 
     logger.info(f"Executing purge for {len(all_target_ids)} minor adlists...")
     with conn:
-        for i in range(0, len(all_target_ids), DB_SQL_CHUNK_SIZE):
-            chunk = all_target_ids[i:i + DB_SQL_CHUNK_SIZE]
+        for i in range(0, len(all_target_ids), 500):
+            chunk = all_target_ids[i:i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             cursor.execute(f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});", tuple(chunk))
             cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});", tuple(chunk))
@@ -566,6 +569,7 @@ def step_6_git_commit_and_push() -> None:
             check=True,
             timeout=15,
             capture_output=True,
+            text=True,
         )
 
         staged_status = subprocess.check_output(
@@ -585,6 +589,7 @@ def step_6_git_commit_and_push() -> None:
             check=True,
             timeout=15,
             capture_output=True,
+            text=True,
         )
 
         subprocess.run(
