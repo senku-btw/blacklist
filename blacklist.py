@@ -523,6 +523,8 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
         return
 
     cursor = conn.cursor()
+    # Explicitly annotate target_ids to prevent mypy from inferring it as List[str]
+    # based on other scope variables or implicit list definitions.
     target_ids: List[int] = []
 
     for i in range(0, len(minor_urls), 500):
@@ -609,8 +611,7 @@ def step_6_git_commit_and_push() -> None:
     hex_commit_msg = secrets.token_hex(4)[:7]
 
     try:
-        pull_run = subprocess.run(
-            ["git", "pull", "--rebase", "--autostash"],
+        pull_run = subprocess.run(isort_safe_cmd := ["git", "pull", "--rebase", "--autostash"],
             cwd=str(BASE_DIR),
             check=False,
             timeout=20,
