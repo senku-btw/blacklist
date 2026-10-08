@@ -328,7 +328,7 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
     domain_ids_to_delete: List[int] = []
 
     for row in rows:
-        domain_id = row["id"]
+        domain_id = int(row["id"])
         if sanitized := sanitize_domain(row["domain"]):
             extracted_domains.add(sanitized)
             domain_ids_to_delete.append(domain_id)
@@ -367,7 +367,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
 
     cursor.execute("SELECT id FROM 'group' WHERE LOWER(name) = 'healthcheck';")
     healthcheck_row = cursor.fetchone()
-    healthcheck_id = healthcheck_row["id"] if healthcheck_row else None
+    healthcheck_id = int(healthcheck_row["id"]) if healthcheck_row else None
 
     if healthcheck_id is not None:
         query = """
@@ -409,7 +409,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
         ) {type_filter};
     """
     cursor.execute(empty_candidates_query)
-    empty_ids = [row["id"] for row in cursor.fetchall()]
+    empty_ids: List[int] = [int(row["id"]) for row in cursor.fetchall()]
 
     if not empty_ids:
         logger.info("Step 3: No empty blocklists found.")
@@ -443,7 +443,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         HAVING COUNT(DISTINCT group_id) = 1 AND MAX(group_id) = ?
     """
     cursor.execute(query_exclusive_default, (default_group_id,))
-    exclusive_adlist_ids = [row["adlist_id"] for row in cursor.fetchall()]
+    exclusive_adlist_ids: List[int] = [int(row["adlist_id"]) for row in cursor.fetchall()]
 
     new_minor_urls: Set[str] = set()
 
@@ -460,7 +460,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
                 HAVING COUNT(*) BETWEEN 1 AND 100;
             """
             cursor.execute(batch_query, tuple(chunk))
-            minor_candidates.update(row["adlist_id"] for row in cursor.fetchall())
+            minor_candidates.update(int(row["adlist_id"]) for row in cursor.fetchall())
 
         if minor_candidates:
             logger.info("Identified %s new minor lists in DB.", len(minor_candidates))
@@ -523,8 +523,6 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
         return
 
     cursor = conn.cursor()
-    # Explicitly annotate target_ids to prevent mypy from inferring it as List[str]
-    # based on other scope variables or implicit list definitions.
     target_ids: List[int] = []
 
     for i in range(0, len(minor_urls), 500):
@@ -533,7 +531,8 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
         cursor.execute(
             f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});", tuple(chunk)
         )
-        target_ids.extend([int(row["id"]) for row in cursor.fetchall()])
+        fetched_rows = cursor.fetchall()
+        target_ids.extend([int(row["id"]) for row in fetched_rows])
 
     if not target_ids:
         logger.info("Step 5: No matching adlist IDs found in database for deletion.")
