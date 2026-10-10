@@ -422,7 +422,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                     SELECT 1 FROM domainlist_by_group
                     WHERE domainlist_id = ? AND group_id = ?
                     """,
-                    (domainlist_id, default_group_id)
+                    (domainlist_id, default_group_id),
                 )
                 if not cursor.fetchone():
                     cursor.execute(
@@ -430,7 +430,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                         INSERT INTO domainlist_by_group
                         (domainlist_id, group_id) VALUES (?, ?)
                         """,
-                        (domainlist_id, default_group_id)
+                        (domainlist_id, default_group_id),
                     )
                     assigned_count += 1
             if assigned_count > 0:
@@ -482,7 +482,9 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
 
     empty_ids: List[int] = [int(row["id"]) for row in rows]
     empty_urls: Set[str] = {
-        row["address"].strip() for row in rows if row["address"] and row["address"].strip()
+        row["address"].strip()
+        for row in rows
+        if row["address"] and row["address"].strip()
     }
 
     if empty_urls:
@@ -680,9 +682,7 @@ def stop_pihole_container() -> None:
             )
             return
 
-        logger.info(
-            "Stopping Pi-hole container '%s' temporarily...", CONTAINER_NAME
-        )
+        logger.info("Stopping Pi-hole container '%s' temporarily...", CONTAINER_NAME)
         subprocess.run(
             ["docker", "stop", CONTAINER_NAME],
             check=True,
@@ -718,7 +718,9 @@ def start_pihole_container() -> None:
     except subprocess.TimeoutExpired:
         logger.error("Docker execution timed out while starting container.")
     except subprocess.CalledProcessError as err:
-        logger.error("Failed to start Pi-hole container via docker start: %s", err.output)
+        logger.error(
+            "Failed to start Pi-hole container via docker start: %s", err.output
+        )
     except OSError as err:
         logger.warning("Unexpected error starting Pi-hole container: %s", err)
 
