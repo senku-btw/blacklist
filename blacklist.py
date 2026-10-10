@@ -48,6 +48,7 @@ BLACKLIST_FILE = BLACKLISTS_DIR / "blacklist.txt"
 EXTRA_FILE = BLACKLISTS_DIR / "blacklist-extra.txt"
 REGEX_FILE = REGEX_DIR / "regex_deny.txt"
 MINOR_LISTS_FILE = BASE_DIR / "minor-lists.txt"
+EMPTY_LISTS_FILE = BASE_DIR / "empty-lists.txt"
 
 DOMAIN_REGEX = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$"
@@ -417,7 +418,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
 
 @retry_on_db_lock()
 def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
-    """Remove empty adlists from the gravity database."""
+    """Remove empty adlists from the gravity database and record their links."""
     logger.info("Starting Step 3: Empty blocklists purge verification...")
     cursor = conn.cursor()
 
@@ -426,7 +427,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
     type_filter = " AND a.type = 0" if "type" in columns else ""
 
     empty_candidates_query = f"""
-        SELECT a.id
+        SELECT a.id, a.address
         FROM adlist a
         WHERE a.id NOT IN (
             SELECT DISTINCT adlist_id
@@ -435,7 +436,23 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
         ) {type_filter};
     """
     cursor.execute(empty_candidates_query)
-    empty_ids: List[int] = [int(row["id"]) for row in cursor.fetchall()]
+    rows = cursor.fetchall()
+
+    empty_ids: List[int] = [int(row["id"]) for row in rows]
+    empty_urls: Set[str] = {
+        row["address"].strip() for row in rows if row["address"] and row["address"].strip()
+    }
+
+    # Aggregate and record empty blocklist URLs into empty-lists.txt permanently
+    if empty_urls:
+        existing_empty_lists = read_text_file_lines(EMPTY_LISTS_FILE)
+        combined_empty_lists = existing_empty_lists.union(empty_urls)
+        atomic_write_file(EMPTY_LISTS_FILE, sorted(combined_empty_lists))
+        logger.info(
+            "Recorded %s empty blocklist links to %s",
+            len(empty_urls),
+            EMPTY_LISTS_FILE.name,
+        )
 
     if not empty_ids:
         logger.info("Step 3: No empty blocklists found.")
