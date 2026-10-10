@@ -855,7 +855,7 @@ def step_6_git_commit_and_push() -> None:
 
 # ------------------------------------------------------------------------------
 # Entry Point
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------
 def main() -> None:
     """Bootstrap script environment and orchestrate execution process safely."""
     logger.info("Initializing Gravity Database Extraction and Maintenance Pipeline.")
