@@ -388,6 +388,7 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
 
 @retry_on_db_lock()
 def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
+    # pylint: disable=too-many-locals
     """
     Extract deny regular expressions, excluding healthchecks,
     assign healthcheck regexes exclusively to Default and Healthcheck groups,
