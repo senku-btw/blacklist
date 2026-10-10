@@ -443,7 +443,6 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
         row["address"].strip() for row in rows if row["address"] and row["address"].strip()
     }
 
-    # Aggregate and record empty blocklist URLs into empty-lists.txt permanently
     if empty_urls:
         existing_empty_lists = read_text_file_lines(EMPTY_LISTS_FILE)
         combined_empty_lists = existing_empty_lists.union(empty_urls)
@@ -616,12 +615,12 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     logger.info("Step 5 completed. Purged %s matching minor adlists.", len(target_ids))
 
 
-def restart_pihole_services() -> None:
-    """Restart Pi-hole DNS to apply database mutations directly to runtime process."""
+def stop_pihole_container() -> None:
+    """Temporarily stop the Pi-hole container to release database locks."""
     logger.info("Checking Pi-hole Docker container status...")
 
     if not shutil.which("docker"):
-        logger.warning("Docker executable not found in PATH. Skipping DNS restart.")
+        logger.warning("Docker executable not found in PATH. Skipping container stop.")
         return
 
     try:
@@ -634,30 +633,52 @@ def restart_pihole_services() -> None:
 
         if check_running != "true":
             logger.warning(
-                "Pi-hole container '%s' is not running. Skipping restart.",
+                "Pi-hole container '%s' is not running. Skipping stop.",
                 CONTAINER_NAME,
             )
             return
 
         logger.info(
-            "Restarting Pi-hole DNS engine on container '%s'...", CONTAINER_NAME
+            "Stopping Pi-hole container '%s' temporarily...", CONTAINER_NAME
         )
         subprocess.run(
-            ["docker", "exec", CONTAINER_NAME, "pihole", "restartdns"],
+            ["docker", "stop", CONTAINER_NAME],
             check=True,
             timeout=30,
             capture_output=True,
             text=True,
         )
-        logger.info("Pi-hole DNS engine restarted successfully.")
+        logger.info("Pi-hole container stopped successfully.")
     except subprocess.TimeoutExpired:
-        logger.error(
-            "Docker execution timed out during container query or DNS restart."
-        )
+        logger.error("Docker execution timed out while stopping container.")
     except subprocess.CalledProcessError as err:
-        logger.error("Failed to restart Pi-hole via docker exec: %s", err.output)
+        logger.error("Failed to stop Pi-hole container via docker stop: %s", err.output)
     except OSError as err:
-        logger.warning("Unexpected error restarting Pi-hole: %s", err)
+        logger.warning("Unexpected error stopping Pi-hole container: %s", err)
+
+
+def start_pihole_container() -> None:
+    """Start the Pi-hole container back up after database maintenance."""
+    if not shutil.which("docker"):
+        logger.warning("Docker executable not found in PATH. Skipping container start.")
+        return
+
+    try:
+        logger.info("Starting Pi-hole container '%s'...", CONTAINER_NAME)
+        subprocess.run(
+            ["docker", "start", CONTAINER_NAME],
+            check=True,
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+        logger.info("Pi-hole container started successfully.")
+    except subprocess.TimeoutExpired:
+        logger.error("Docker execution timed out while starting container.")
+    except subprocess.CalledProcessError as err:
+        logger.error("Failed to start Pi-hole container via docker start: %s", err.output)
+    except OSError as err:
+        logger.warning("Unexpected error starting Pi-hole container: %s", err)
 
 
 def step_6_git_commit_and_push() -> None:
@@ -755,14 +776,20 @@ def main() -> None:
     REGEX_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
-        with get_db_connection(DB_PATH) as conn:
-            step_1_process_exact_blocked_domains(conn)
-            step_2_process_regex_deny(conn)
-            step_3_purge_empty_blocklists(conn)
-            step_4_process_minor_blocklists(conn)
-            step_5_purge_minor_blocklists_from_db(conn)
+        # Stop Pi-hole container completely to eliminate any database lock risks
+        stop_pihole_container()
 
-        restart_pihole_services()
+        try:
+            with get_db_connection(DB_PATH) as conn:
+                step_1_process_exact_blocked_domains(conn)
+                step_2_process_regex_deny(conn)
+                step_3_purge_empty_blocklists(conn)
+                step_4_process_minor_blocklists(conn)
+                step_5_purge_minor_blocklists_from_db(conn)
+        finally:
+            # Ensure container restarts even if database operations encounter an exception
+            start_pihole_container()
+
         step_6_git_commit_and_push()
 
         logger.info("Pipeline execution finished cleanly and successfully.")
