@@ -315,11 +315,11 @@ def fetch_single_list(url: str) -> Set[str]:
     return extracted
 
 
-def get_default_group_id(cursor: sqlite3.Cursor) -> int:
+def get_default_group_id(cursor: sqlite3.Cursor) -> Optional[int]:
     """Retrieve the primary ID for the 'Default' grouping in the domain database."""
     cursor.execute("SELECT id FROM 'group' WHERE name = 'Default';")
     row = cursor.fetchone()
-    return int(row["id"]) if row else 0
+    return int(row["id"]) if row else None
 
 
 # ------------------------------------------------------------------------------
@@ -332,6 +332,8 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 1: Exact blocked domains processing...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
+    if default_group_id is None:
+        default_group_id = 0
 
     query = """
         SELECT d.id, d.domain
@@ -399,8 +401,6 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
     healthcheck_row = cursor.fetchone()
     healthcheck_id = int(healthcheck_row["id"]) if healthcheck_row else None
 
-    # Find all regex deny entries (type 3) that are either assigned to the healthcheck group
-    # or have a comment matching "healthcheck" (case-insensitive).
     healthcheck_regex_query = """
         SELECT DISTINCT d.id, d.domain
         FROM domainlist d
@@ -417,8 +417,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
     cursor.execute(healthcheck_regex_query, (hc_param,))
     healthcheck_rows = cursor.fetchall()
 
-    # Ensure these matched regex entries are also assigned to the Default group.
-    if default_group_id and healthcheck_rows:
+    if default_group_id is not None and healthcheck_rows:
         with conn:
             assigned_count = 0
             for row in healthcheck_rows:
@@ -445,7 +444,6 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                     assigned_count,
                 )
 
-    # Extract remaining regex deny entries for regex_deny.txt file (excluding healthcheck rules)
     export_query = """
         SELECT DISTINCT d.domain
         FROM domainlist d
@@ -533,6 +531,8 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 4: Minor blocklists extraction and fresh HTTP fetch...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
+    if default_group_id is None:
+        default_group_id = 0
 
     query_exclusive_default = """
         SELECT adlist_id
