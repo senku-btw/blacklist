@@ -386,7 +386,10 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
 
 @retry_on_db_lock()
 def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
-    """Extract deny regular expressions, excluding healthchecks, and assign healthcheck regexes to Default group."""
+    """
+    Extract deny regular expressions, excluding healthchecks,
+    and assign healthcheck regexes to Default group.
+    """
     logger.info("Starting Step 2: Regex deny rules processing...")
     cursor = conn.cursor()
 
@@ -404,7 +407,8 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
         WHERE d.type = 3
           AND (dg.domainlist_id IS NOT NULL OR LOWER(TRIM(d.comment)) = 'healthcheck')
     """
-    cursor.execute(healthcheck_regex_query, (healthcheck_id if healthcheck_id is not None else -1,))
+    hc_param = healthcheck_id if healthcheck_id is not None else -1
+    cursor.execute(healthcheck_regex_query, (hc_param,))
     healthcheck_rows = cursor.fetchall()
 
     # 2. Ensure these healthcheck/comment-matching regex entries are assigned to the Default group also
@@ -424,9 +428,13 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                     )
                     assigned_count += 1
             if assigned_count > 0:
-                logger.info("Assigned %s healthcheck/comment regex entries to the Default group.", assigned_count)
+                logger.info(
+                    "Assigned %s healthcheck/comment regex entries to the Default group.",
+                    assigned_count,
+                )
 
-    # 3. Extract remaining regex deny entries for regex_deny.txt (excluding healthcheck group or comment "healthcheck")
+    # 3. Extract remaining regex deny entries for regex_deny.txt
+    # (excluding healthcheck group or comment "healthcheck")
     export_query = """
         SELECT DISTINCT d.domain
         FROM domainlist d
@@ -435,7 +443,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
           AND dg.domainlist_id IS NULL
           AND (d.comment IS NULL OR LOWER(TRIM(d.comment)) != 'healthcheck')
     """
-    cursor.execute(export_query, (healthcheck_id if healthcheck_id is not None else -1,))
+    cursor.execute(export_query, (hc_param,))
     rows = cursor.fetchall()
     processed_regexes = {
         sanitized for row in rows if (sanitized := sanitize_regex(row["domain"]))
