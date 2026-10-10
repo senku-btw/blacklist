@@ -423,7 +423,6 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
             for row in healthcheck_rows:
                 domainlist_id = int(row["id"])
 
-                # 1. Ensure assigned to Default group
                 if default_group_id is not None:
                     cursor.execute(
                         """
@@ -441,7 +440,6 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                             (domainlist_id, default_group_id),
                         )
 
-                # 2. Ensure assigned to Healthcheck group
                 if healthcheck_id is not None:
                     cursor.execute(
                         """
@@ -459,7 +457,6 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                             (domainlist_id, healthcheck_id),
                         )
 
-                # 3. De-attach (delete) any groups other than healthcheck and default
                 valid_group_ids = [
                     gid
                     for gid in (default_group_id, healthcheck_id)
@@ -476,7 +473,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                     )
 
             logger.info(
-                "Processed and restricted %s healthcheck/comment regex entries to Default and Healthcheck groups.",
+                "Restricted %s healthcheck/comment regex entries to Default and Healthcheck.",
                 len(healthcheck_rows),
             )
 
