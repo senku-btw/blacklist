@@ -399,46 +399,51 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
     healthcheck_row = cursor.fetchone()
     healthcheck_id = int(healthcheck_row["id"]) if healthcheck_row else None
 
-    # 1. Identify regex deny entries assigned to healthcheck group or with comment "healthcheck"
     healthcheck_regex_query = """
         SELECT DISTINCT d.id, d.domain
         FROM domainlist d
-        LEFT JOIN domainlist_by_group dg ON d.id = dg.domainlist_id AND dg.group_id = ?
+        LEFT JOIN domainlist_by_group dg
+          ON d.id = dg.domainlist_id AND dg.group_id = ?
         WHERE d.type = 3
-          AND (dg.domainlist_id IS NOT NULL OR LOWER(TRIM(d.comment)) = 'healthcheck')
+          AND (dg.domainlist_id IS NOT NULL
+               OR LOWER(TRIM(d.comment)) = 'healthcheck')
     """
     hc_param = healthcheck_id if healthcheck_id is not None else -1
     cursor.execute(healthcheck_regex_query, (hc_param,))
     healthcheck_rows = cursor.fetchall()
 
-    # 2. Ensure these healthcheck/comment-matching regex entries are assigned to the Default group also
     if default_group_id and healthcheck_rows:
         with conn:
             assigned_count = 0
             for row in healthcheck_rows:
                 domainlist_id = int(row["id"])
                 cursor.execute(
-                    "SELECT 1 FROM domainlist_by_group WHERE domainlist_id = ? AND group_id = ?",
+                    """
+                    SELECT 1 FROM domainlist_by_group
+                    WHERE domainlist_id = ? AND group_id = ?
+                    """,
                     (domainlist_id, default_group_id)
                 )
                 if not cursor.fetchone():
                     cursor.execute(
-                        "INSERT INTO domainlist_by_group (domainlist_id, group_id) VALUES (?, ?)",
+                        """
+                        INSERT INTO domainlist_by_group
+                        (domainlist_id, group_id) VALUES (?, ?)
+                        """,
                         (domainlist_id, default_group_id)
                     )
                     assigned_count += 1
             if assigned_count > 0:
                 logger.info(
-                    "Assigned %s healthcheck/comment regex entries to the Default group.",
+                    "Assigned %s healthcheck/comment regex entries to Default.",
                     assigned_count,
                 )
 
-    # 3. Extract remaining regex deny entries for regex_deny.txt
-    # (excluding healthcheck group or comment "healthcheck")
     export_query = """
         SELECT DISTINCT d.domain
         FROM domainlist d
-        LEFT JOIN domainlist_by_group dg ON d.id = dg.domainlist_id AND dg.group_id = ?
+        LEFT JOIN domainlist_by_group dg
+          ON d.id = dg.domainlist_id AND dg.group_id = ?
         WHERE d.type = 3
           AND dg.domainlist_id IS NULL
           AND (d.comment IS NULL OR LOWER(TRIM(d.comment)) != 'healthcheck')
