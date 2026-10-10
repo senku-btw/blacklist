@@ -459,9 +459,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
                         )
 
                 valid_group_ids = [
-                    gid
-                    for gid in (default_group_id, healthcheck_id)
-                    if gid is not None
+                    gid for gid in (default_group_id, healthcheck_id) if gid is not None
                 ]
                 if valid_group_ids:
                     placeholders = ",".join(["?"] * len(valid_group_ids))
@@ -855,7 +853,7 @@ def step_6_git_commit_and_push() -> None:
 
 # ------------------------------------------------------------------------------
 # Entry Point
-# ---------------------------------------------------
+# ------------------------------------------------------------------------------
 def main() -> None:
     """Bootstrap script environment and orchestrate execution process safely."""
     logger.info("Initializing Gravity Database Extraction and Maintenance Pipeline.")
