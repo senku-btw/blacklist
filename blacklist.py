@@ -50,6 +50,11 @@ REGEX_FILE = REGEX_DIR / "regex_deny.txt"
 MINOR_LISTS_FILE = BASE_DIR / "minor-lists.txt"
 EMPTY_LISTS_FILE = BASE_DIR / "empty-lists.txt"
 
+EXCLUSION_URLS = [
+    "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt",
+    "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt",
+]
+
 DOMAIN_REGEX = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$"
 )
@@ -559,7 +564,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
 @retry_on_db_lock()
 def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     # pylint: disable=too-many-locals
-    """Fetch concurrent payloads of minor adlists (<= 100 entries)."""
+    """Fetch concurrent payloads of minor adlists (<= 1000 entries)."""
     logger.info("Starting Step 4: Minor blocklists extraction and fresh HTTP fetch...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
@@ -589,7 +594,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
                 FROM gravity
                 WHERE adlist_id IN ({placeholders})
                 GROUP BY adlist_id
-                HAVING COUNT(*) BETWEEN 1 AND 100;
+                HAVING COUNT(*) BETWEEN 1 AND 1000;
             """
             cursor.execute(batch_query, tuple(chunk))
             minor_candidates.update(int(row["adlist_id"]) for row in cursor.fetchall())
@@ -612,17 +617,17 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     if not new_minor_urls:
         logger.info(
-            "Step 4: No new minor lists with 1 to 100 domains identified in DB."
+            "Step 4: No new minor lists with 1 to 1000 domains identified in DB."
         )
 
     existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
-    all_minor_urls = existing_minor_urls.union(new_minor_urls)
+    all_minor_urls = existing_minor_urls.union(new_minor_urls).union(EXCLUSION_URLS)
 
     if not all_minor_urls:
         logger.info("No minor lists available to process. Skipping HTTP fetch.")
         return
 
-    if new_minor_urls:
+    if new_minor_urls or EXCLUSION_URLS:
         atomic_write_file(MINOR_LISTS_FILE, sorted(all_minor_urls))
 
     logger.info(
