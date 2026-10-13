@@ -1,2 +1,5 @@
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/amp/ente-dev/google-amp-hosts.fork.txt
+https://gitlab.com/dns-firewall/dns/matrix/matrix/raw/master/source/adware/domains.list
+https://list.kwbt.de/kwbtlist.txt
+https://npc.0am.jp/hosts.php?dl=1
 https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt
