@@ -51,8 +51,14 @@ MINOR_LISTS_FILE = BASE_DIR / "minor-lists.txt"
 EMPTY_LISTS_FILE = BASE_DIR / "empty-lists.txt"
 
 EXCLUSION_URLS = [
-    "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt",
-    "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt",
+    (
+        "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/"
+        "blacklists/blacklist-extra.txt"
+    ),
+    (
+        "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/"
+        "blacklists/blacklist.txt"
+    ),
 ]
 
 DOMAIN_REGEX = re.compile(
