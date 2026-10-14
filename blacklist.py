@@ -59,6 +59,14 @@ EXCLUSION_URLS = [
         "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/"
         "blacklists/blacklist.txt"
     ),
+    (
+        "https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/"
+        "whitelist.txt"
+    ),
+    (
+        "https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/"
+        "healthcheck.txt"
+    ),
 ]
 
 DOMAIN_REGEX = re.compile(
