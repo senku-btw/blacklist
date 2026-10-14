@@ -570,7 +570,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
 @retry_on_db_lock()
 def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     # pylint: disable=too-many-locals
-    """Fetch concurrent payloads of minor adlists (<= 1000 entries)."""
+    """Fetch concurrent payloads of minor adlists (<= 2500 entries)."""
     logger.info("Starting Step 4: Minor blocklists extraction and fresh HTTP fetch...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
@@ -600,7 +600,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
                 FROM gravity
                 WHERE adlist_id IN ({placeholders})
                 GROUP BY adlist_id
-                HAVING COUNT(*) BETWEEN 1 AND 1000;
+                HAVING COUNT(*) BETWEEN 1 AND 2500;
             """
             cursor.execute(batch_query, tuple(chunk))
             minor_candidates.update(int(row["adlist_id"]) for row in cursor.fetchall())
@@ -623,7 +623,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     if not new_minor_urls:
         logger.info(
-            "Step 4: No new minor lists with 1 to 1000 domains identified in DB."
+            "Step 4: No new minor lists with 1 to 2500 domains identified in DB."
         )
 
     existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
@@ -667,9 +667,12 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
 @retry_on_db_lock()
 def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
-    """Purge identified minor lists from the local Pi-hole configuration in DB."""
+    """Purge identified minor lists from the local Pi-hole configuration in DB, excluding protection URLs."""
     logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
-    minor_urls = list(read_text_file_lines(MINOR_LISTS_FILE))
+    raw_minor_urls = list(read_text_file_lines(MINOR_LISTS_FILE))
+
+    # CRITICAL: Exclude any EXCLUSION_URLS so they are never removed from the database under any circumstances
+    minor_urls = [url for url in raw_minor_urls if url not in EXCLUSION_URLS]
 
     if not minor_urls:
         logger.info("No minor list URLs found to purge.")
