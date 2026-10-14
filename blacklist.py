@@ -675,11 +675,15 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
 @retry_on_db_lock()
 def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
-    """Purge identified minor lists from the local Pi-hole configuration in DB, excluding protection URLs."""
+    """
+    Purge identified minor lists from the local Pi-hole
+    configuration in DB, excluding protection URLs.
+    """
     logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
     raw_minor_urls = list(read_text_file_lines(MINOR_LISTS_FILE))
 
-    # CRITICAL: Exclude any EXCLUSION_URLS so they are never removed from the database under any circumstances
+    # CRITICAL: Exclude any EXCLUSION_URLS so they are never removed
+    # from the database under any circumstances.
     minor_urls = [url for url in raw_minor_urls if url not in EXCLUSION_URLS]
 
     if not minor_urls:
