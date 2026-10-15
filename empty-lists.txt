@@ -1,5 +1,16 @@
+http://blacklists.ntop.org/adblocker-hostnames.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/amp/ente-dev/google-amp-hosts.fork.txt
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.txt
+https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/dga14.txt
+https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/dga30.txt
+https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/nrd14-8.txt
+https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/nrd21-15.txt
+https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/nrd28-22.txt
+https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/nrd35-29.txt
+https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/nrd7.txt
 https://gitlab.com/dns-firewall/dns/matrix/matrix/raw/master/source/adware/domains.list
+https://hosts.nfz.moe/basic/hosts
+https://hosts.nfz.moe/full/hosts
 https://kriskintel.com/feeds/ktip_malicious_domains.txt
 https://kriskintel.com/feeds/ktip_ransomware_feeds.txt
 https://list.kwbt.de/kwbtlist.txt
