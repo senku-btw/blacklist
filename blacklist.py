@@ -73,11 +73,11 @@ DOMAIN_REGEX = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$"
 )
 
-# Safeguards & Performance Parameters
-MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", str(50 * 1024 * 1024)))
-HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "10"))
-MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "12"))
-MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(20 * 1024 * 1024)))
+# Safeguards & Performance Parameters (Optimized for minimal resource footprint)
+MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", str(20 * 1024 * 1024)))
+HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "8"))
+MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "32"))
+MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(10 * 1024 * 1024)))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -172,7 +172,7 @@ def ensure_database_indexes(conn: sqlite3.Connection) -> None:
 # ------------------------------------------------------------------------------
 @contextmanager
 def get_db_connection(db_path: Path):
-    """Context manager for yielding a configured SQLite connection."""
+    """Context manager for yielding a configured SQLite connection with optimized memory flags."""
     check_preflight_conditions(db_path)
 
     conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=60.0)
@@ -182,7 +182,10 @@ def get_db_connection(db_path: Path):
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
-        conn.execute("PRAGMA cache_size = -10000;")
+        # Reduced cache size (negative value is in KiB; -2000 = ~2MB) to save RAM on minimal resource systems
+        conn.execute("PRAGMA cache_size = -2000;")
+        # Enable memory-mapped I/O for faster, lower-overhead reads on small systems
+        conn.execute("PRAGMA mmap_size = 268435456;")
 
         ensure_database_indexes(conn)
         yield conn
@@ -286,7 +289,7 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
 
 
 def fetch_single_list(url: str) -> Set[str]:
-    """Worker function to download and parse remote blocklists concurrently."""
+    """Worker function to download and parse remote blocklists concurrently using memory-efficient streaming."""
     extracted: Set[str] = set()
     req = urllib.request.Request(
         url,
@@ -308,17 +311,18 @@ def fetch_single_list(url: str) -> Set[str]:
                 )
                 return extracted
 
-            raw_bytes = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw_bytes) > MAX_RESPONSE_BYTES:
-                logger.warning(
-                    "Skipping %s: Response body exceeded limit of %s bytes",
-                    url,
-                    MAX_RESPONSE_BYTES,
-                )
-                return extracted
+            total_read = 0
+            for raw_line in response:
+                total_read += len(raw_line)
+                if total_read > MAX_RESPONSE_BYTES:
+                    logger.warning(
+                        "Skipping %s: Response body exceeded limit of %s bytes",
+                        url,
+                        MAX_RESPONSE_BYTES,
+                    )
+                    return extracted
 
-            text = raw_bytes.decode("utf-8", errors="ignore")
-            for line in text.splitlines():
+                line = raw_line.decode("utf-8", errors="ignore")
                 clean_line = line.split("#")[0].strip()
                 if not clean_line:
                     continue
@@ -647,17 +651,22 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         atomic_write_file(MINOR_LISTS_FILE, sorted(all_minor_urls))
 
     logger.info(
-        "Fetching fresh contents concurrently over HTTP for %s minor lists...",
+        "Fetching fresh contents concurrently over HTTP for %s minor lists using %s workers...",
         len(all_minor_urls),
+        MAX_HTTP_WORKERS,
     )
     extracted_domains: Set[str] = set()
 
+    # Optimized ThreadPoolExecutor handling hundreds of concurrent downloads safely and cleanly
     with ThreadPoolExecutor(max_workers=MAX_HTTP_WORKERS) as executor:
-        future_to_url = {
-            executor.submit(fetch_single_list, url): url for url in all_minor_urls
-        }
-        for future in as_completed(future_to_url):
-            extracted_domains.update(future.result())
+        futures = {executor.submit(fetch_single_list, url): url for url in all_minor_urls}
+        for future in as_completed(futures):
+            try:
+                res = future.result()
+                if res:
+                    extracted_domains.update(res)
+            except Exception as err:
+                logger.warning("Error collecting worker result: %s", err)
 
     if extracted_domains:
         existing_extra_domains = read_text_file_lines(EXTRA_FILE)
