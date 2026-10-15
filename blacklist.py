@@ -682,4 +682,239 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
     logger.info("Starting Step 5: Purging minor blocklists from database in-place...")
     raw_minor_urls = list(read_text_file_lines(MINOR_LISTS_FILE))
 
-    # CRITICAL: Exclude any EXCLUSION_URLS
+    # CRITICAL: Exclude any EXCLUSION_URLS so they are never removed
+    # from the database under any circumstances.
+    minor_urls = [url for url in raw_minor_urls if url not in EXCLUSION_URLS]
+
+    if not minor_urls:
+        logger.info("No minor list URLs found to purge.")
+        return
+
+    cursor = conn.cursor()
+    target_ids: List[int] = []
+
+    for i in range(0, len(minor_urls), 500):
+        url_chunk = minor_urls[i : i + 500]
+        placeholders = ",".join(["?"] * len(url_chunk))
+        cursor.execute(
+            f"SELECT id FROM adlist WHERE TRIM(address) IN ({placeholders});",
+            tuple(url_chunk),
+        )
+        fetched_rows = cursor.fetchall()
+        target_ids.extend([int(row["id"]) for row in fetched_rows])
+
+    if not target_ids:
+        logger.info("Step 5: No matching adlist IDs found in database for deletion.")
+        return
+
+    logger.info("Executing purge for %s minor adlists...", len(target_ids))
+    with conn:
+        for i in range(0, len(target_ids), 500):
+            id_chunk = target_ids[i : i + 500]
+            placeholders = ",".join(["?"] * len(id_chunk))
+            cursor.execute(
+                f"DELETE FROM gravity WHERE adlist_id IN ({placeholders});",
+                tuple(id_chunk),
+            )
+            cursor.execute(
+                f"DELETE FROM adlist_by_group WHERE adlist_id IN ({placeholders});",
+                tuple(id_chunk),
+            )
+            cursor.execute(
+                f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(id_chunk)
+            )
+
+    logger.info("Step 5 completed. Purged %s matching minor adlists.", len(target_ids))
+
+
+def stop_pihole_container() -> None:
+    """Temporarily stop the Pi-hole container to release database locks."""
+    logger.info("Checking Pi-hole Docker container status...")
+
+    if not shutil.which("docker"):
+        logger.warning("Docker executable not found in PATH. Skipping container stop.")
+        return
+
+    try:
+        check_running = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME],
+            text=True,
+            timeout=10,
+            stderr=subprocess.STDOUT,
+        ).strip()
+
+        if check_running != "true":
+            logger.warning(
+                "Pi-hole container '%s' is not running. Skipping stop.",
+                CONTAINER_NAME,
+            )
+            return
+
+        logger.info("Stopping Pi-hole container '%s' temporarily...", CONTAINER_NAME)
+        subprocess.run(
+            ["docker", "stop", CONTAINER_NAME],
+            check=True,
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+        logger.info("Pi-hole container stopped successfully.")
+    except subprocess.TimeoutExpired:
+        logger.error("Docker execution timed out while stopping container.")
+    except subprocess.CalledProcessError as err:
+        logger.error("Failed to stop Pi-hole container via docker stop: %s", err.output)
+    except OSError as err:
+        logger.warning("Unexpected error stopping Pi-hole container: %s", err)
+
+
+def start_pihole_container() -> None:
+    """Start the Pi-hole container back up after database maintenance."""
+    if not shutil.which("docker"):
+        logger.warning("Docker executable not found in PATH. Skipping container start.")
+        return
+
+    try:
+        logger.info("Starting Pi-hole container '%s'...", CONTAINER_NAME)
+        subprocess.run(
+            ["docker", "start", CONTAINER_NAME],
+            check=True,
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+        logger.info("Pi-hole container started successfully.")
+    except subprocess.TimeoutExpired:
+        logger.error("Docker execution timed out while starting container.")
+    except subprocess.CalledProcessError as err:
+        logger.error(
+            "Failed to start Pi-hole container via docker start: %s", err.output
+        )
+    except OSError as err:
+        logger.warning("Unexpected error starting Pi-hole container: %s", err)
+
+
+def step_6_git_commit_and_push() -> None:
+    """Commit configuration changes and push them dynamically to the remote Git repo."""
+    logger.info("Starting Step 6: Git version control push...")
+
+    if not shutil.which("git"):
+        logger.warning("Git executable not found in PATH. Skipping git operations.")
+        return
+
+    if not (BASE_DIR / ".git").exists():
+        logger.warning("Directory is not a Git repository. Skipping git operations.")
+        return
+
+    hex_commit_msg = secrets.token_hex(4)[:7]
+
+    try:
+        pull_run = subprocess.run(
+            ["git", "pull", "--rebase", "--autostash"],
+            cwd=str(BASE_DIR),
+            check=False,
+            timeout=20,
+            capture_output=True,
+            text=True,
+        )
+
+        if pull_run.returncode != 0:
+            logger.error(
+                "Git pull failed. Aborting commit to protect repository state. Details: %s",
+                pull_run.stderr,
+            )
+            return
+
+        status_output = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=str(BASE_DIR),
+            text=True,
+            timeout=15,
+        )
+
+        if not status_output.strip():
+            logger.info("No changes detected in Git repository. Skipping commit/push.")
+            return
+
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=15,
+            capture_output=True,
+        )
+
+        staged_status = subprocess.check_output(
+            ["git", "diff", "--staged", "--name-only"],
+            cwd=str(BASE_DIR),
+            text=True,
+            timeout=15,
+        )
+
+        if not staged_status.strip():
+            logger.info("No staged changes to commit. Skipping commit.")
+            return
+
+        subprocess.run(
+            ["git", "commit", "-m", hex_commit_msg],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=15,
+            capture_output=True,
+        )
+
+        subprocess.run(
+            ["git", "push"],
+            cwd=str(BASE_DIR),
+            check=True,
+            timeout=30,
+            capture_output=True,
+        )
+        logger.info("Git push executed successfully.")
+
+    except subprocess.TimeoutExpired as err:
+        logger.error("Git execution timed out: %s", err)
+    except subprocess.CalledProcessError as err:
+        logger.error("Git execution failed: %s", err.stderr or err.output)
+
+
+# ------------------------------------------------------------------------------
+# Entry Point
+# ------------------------------------------------------------------------------
+def main() -> None:
+    """Bootstrap script environment and orchestrate execution process safely."""
+    logger.info("Initializing Gravity Database Extraction and Maintenance Pipeline.")
+
+    BLACKLISTS_DIR.mkdir(parents=True, exist_ok=True)
+    REGEX_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Stop Pi-hole container completely to eliminate any database lock risks
+        stop_pihole_container()
+
+        try:
+            with get_db_connection(DB_PATH) as conn:
+                step_1_process_exact_blocked_domains(conn)
+                step_2_process_regex_deny(conn)
+                step_3_purge_empty_blocklists(conn)
+                step_4_process_minor_blocklists(conn)
+                step_5_purge_minor_blocklists_from_db(conn)
+        finally:
+            # Ensure container restarts even if database operations encounter an exception
+            start_pihole_container()
+
+        step_6_git_commit_and_push()
+
+        logger.info("Pipeline execution finished cleanly and successfully.")
+        sys.exit(0)
+
+    except Exception as fatal_err:  # pylint: disable=broad-exception-caught
+        logger.critical(
+            "Fatal error encountered during pipeline execution: %s",
+            fatal_err,
+            exc_info=True,
+        )
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
