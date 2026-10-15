@@ -578,7 +578,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
 @retry_on_db_lock()
 def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
     # pylint: disable=too-many-locals
-    """Fetch concurrent payloads of minor adlists (<= 9999 entries)."""
+    """Fetch concurrent payloads of minor adlists (< 100,000 entries with no comment)."""
     logger.info("Starting Step 4: Minor blocklists extraction and fresh HTTP fetch...")
     cursor = conn.cursor()
     default_group_id = get_default_group_id(cursor)
@@ -604,11 +604,13 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
             chunk = exclusive_adlist_ids[i : i + 500]
             placeholders = ",".join(["?"] * len(chunk))
             batch_query = f"""
-                SELECT adlist_id
-                FROM gravity
-                WHERE adlist_id IN ({placeholders})
-                GROUP BY adlist_id
-                HAVING COUNT(*) BETWEEN 1 AND 9999;
+                SELECT g.adlist_id
+                FROM gravity g
+                JOIN adlist a ON g.adlist_id = a.id
+                WHERE g.adlist_id IN ({placeholders})
+                  AND (a.comment IS NULL OR TRIM(a.comment) = '')
+                GROUP BY g.adlist_id
+                HAVING COUNT(*) < 100000;
             """
             cursor.execute(batch_query, tuple(chunk))
             minor_candidates.update(int(row["adlist_id"]) for row in cursor.fetchall())
@@ -631,7 +633,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     if not new_minor_urls:
         logger.info(
-            "Step 4: No new minor lists with 1 to 9999 domains identified in DB."
+            "Step 4: No new minor lists under 100,000 domains with no comment identified in DB."
         )
 
     existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
