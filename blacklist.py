@@ -73,12 +73,12 @@ DOMAIN_REGEX = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$"
 )
 
-# Safeguards & Performance Parameters (Optimized for minimal resource footprint)
+# Safeguards & Performance Parameters (Optimized for minimal resource footprint & fast execution)
 MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", str(20 * 1024 * 1024)))
-HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "10"))
+HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "5"))
 MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "32"))
 MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(15 * 1024 * 1024)))
-HTTP_RETRIES = 3
+HTTP_RETRIES = 2
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -296,7 +296,7 @@ def fetch_single_list(url: str) -> Set[str]:
     )
     ssl_context = ssl.create_default_context()
 
-    delay = 1.5
+    delay = 1.0
     for attempt in range(1, HTTP_RETRIES + 1):
         try:
             with urllib.request.urlopen(
@@ -647,7 +647,6 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
     
-    # Exclude large self-hosted output files from being downloaded over HTTP
     fetch_exclusion_urls = {
         "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt",
         "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt"
