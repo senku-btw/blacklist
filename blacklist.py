@@ -75,9 +75,10 @@ DOMAIN_REGEX = re.compile(
 
 # Safeguards & Performance Parameters (Optimized for minimal resource footprint)
 MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", str(20 * 1024 * 1024)))
-HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "8"))
+HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "10"))
 MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "32"))
-MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(10 * 1024 * 1024)))
+MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(15 * 1024 * 1024)))
+HTTP_RETRIES = 3
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -182,9 +183,7 @@ def get_db_connection(db_path: Path):
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
-        # Reduced cache size (negative value is in KiB; -2000 = ~2MB) to save RAM on minimal resource systems
         conn.execute("PRAGMA cache_size = -2000;")
-        # Enable memory-mapped I/O for faster, lower-overhead reads on small systems
         conn.execute("PRAGMA mmap_size = 268435456;")
 
         ensure_database_indexes(conn)
@@ -289,52 +288,58 @@ def atomic_write_file(file_path: Path, lines: List[str]) -> None:
 
 
 def fetch_single_list(url: str) -> Set[str]:
-    """Worker function to download and parse remote blocklists concurrently using memory-efficient streaming."""
+    """Worker function to download and parse remote blocklists concurrently with streaming and retries."""
     extracted: Set[str] = set()
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; PiholeGravityPipeline/2.1)"},
     )
-
     ssl_context = ssl.create_default_context()
 
-    try:
-        with urllib.request.urlopen(
-            req, timeout=HTTP_TIMEOUT_SECONDS, context=ssl_context
-        ) as response:
-            content_length = response.headers.get("Content-Length")
-            if content_length and int(content_length) > MAX_RESPONSE_BYTES:
-                logger.warning(
-                    "Skipping %s: Payload exceeds allowed size (%s bytes)",
-                    url,
-                    content_length,
-                )
-                return extracted
-
-            total_read = 0
-            for raw_line in response:
-                total_read += len(raw_line)
-                if total_read > MAX_RESPONSE_BYTES:
+    delay = 1.5
+    for attempt in range(1, HTTP_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(
+                req, timeout=HTTP_TIMEOUT_SECONDS, context=ssl_context
+            ) as response:
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > MAX_RESPONSE_BYTES:
                     logger.warning(
-                        "Skipping %s: Response body exceeded limit of %s bytes",
+                        "Skipping %s: Payload exceeds allowed size (%s bytes)",
                         url,
-                        MAX_RESPONSE_BYTES,
+                        content_length,
                     )
                     return extracted
 
-                line = raw_line.decode("utf-8", errors="ignore")
-                clean_line = line.split("#")[0].strip()
-                if not clean_line:
-                    continue
-                parts = clean_line.split()
-                if len(parts) >= 2 and parts[0] in ("0.0.0.0", "127.0.0.1"):
-                    target = parts[1]
-                else:
-                    target = parts[0]
-                if sanitized := sanitize_domain(target):
-                    extracted.add(sanitized)
-    except (urllib.error.URLError, ssl.SSLError, IOError) as err:
-        logger.warning("Failed to fetch minor list URL %s: %s", url, err)
+                total_read = 0
+                for raw_line in response:
+                    total_read += len(raw_line)
+                    if total_read > MAX_RESPONSE_BYTES:
+                        logger.warning(
+                            "Skipping %s: Response body exceeded limit of %s bytes",
+                            url,
+                            MAX_RESPONSE_BYTES,
+                        )
+                        return extracted
+
+                    line = raw_line.decode("utf-8", errors="ignore")
+                    clean_line = line.split("#")[0].strip()
+                    if not clean_line:
+                        continue
+                    parts = clean_line.split()
+                    if len(parts) >= 2 and parts[0] in ("0.0.0.0", "127.0.0.1"):
+                        target = parts[1]
+                    else:
+                        target = parts[0]
+                    if sanitized := sanitize_domain(target):
+                        extracted.add(sanitized)
+            return extracted
+        except (urllib.error.URLError, ssl.SSLError, IOError) as err:
+            if attempt == HTTP_RETRIES:
+                logger.warning("Failed to fetch minor list URL %s after %s attempts: %s", url, HTTP_RETRIES, err)
+            else:
+                time.sleep(delay)
+                delay *= 2
     return extracted
 
 
@@ -641,7 +646,15 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         )
 
     existing_minor_urls = read_text_file_lines(MINOR_LISTS_FILE)
+    
+    # Exclude large self-hosted output files from being downloaded over HTTP
+    fetch_exclusion_urls = {
+        "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt",
+        "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt"
+    }
+
     all_minor_urls = existing_minor_urls.union(new_minor_urls).union(EXCLUSION_URLS)
+    http_fetch_urls = {url for url in all_minor_urls if url not in fetch_exclusion_urls}
 
     if not all_minor_urls:
         logger.info("No minor lists available to process. Skipping HTTP fetch.")
@@ -652,14 +665,13 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
 
     logger.info(
         "Fetching fresh contents concurrently over HTTP for %s minor lists using %s workers...",
-        len(all_minor_urls),
+        len(http_fetch_urls),
         MAX_HTTP_WORKERS,
     )
     extracted_domains: Set[str] = set()
 
-    # Optimized ThreadPoolExecutor handling hundreds of concurrent downloads safely and cleanly
     with ThreadPoolExecutor(max_workers=MAX_HTTP_WORKERS) as executor:
-        futures = {executor.submit(fetch_single_list, url): url for url in all_minor_urls}
+        futures = {executor.submit(fetch_single_list, url): url for url in http_fetch_urls}
         for future in as_completed(futures):
             try:
                 res = future.result()
