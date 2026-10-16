@@ -7,6 +7,7 @@ Extracts, sanitizes, and purges database entries directly using set-based
 SQL queries, retry decorators, concurrent HTTP list fetching, and Git synchronization.
 """
 
+import gc
 import logging
 import os
 import re
@@ -73,11 +74,11 @@ DOMAIN_REGEX = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$"
 )
 
-# Safeguards & Performance Parameters (Optimized for minimal resource footprint & fast execution)
+# Safeguards & Performance Parameters (Hard-optimized for minimal memory / OOM prevention)
 MIN_FREE_DISK_BYTES = int(os.getenv("MIN_FREE_DISK_BYTES", str(20 * 1024 * 1024)))
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "5"))
-MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "32"))
-MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(15 * 1024 * 1024)))
+MAX_HTTP_WORKERS = int(os.getenv("MAX_HTTP_WORKERS", "16"))
+MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", str(8 * 1024 * 1024)))
 HTTP_RETRIES = 2
 
 logging.basicConfig(
@@ -412,6 +413,7 @@ def step_1_process_exact_blocked_domains(conn: sqlite3.Connection) -> None:
                     tuple(chunk),
                 )
         logger.info("Step 1 database purge completed successfully.")
+    gc.collect()
 
 
 @retry_on_db_lock()
@@ -524,6 +526,7 @@ def step_2_process_regex_deny(conn: sqlite3.Connection) -> None:
 
     atomic_write_file(REGEX_FILE, sorted(processed_regexes))
     logger.info("Step 2 completed. %s regex entries saved.", len(processed_regexes))
+    gc.collect()
 
 
 @retry_on_db_lock()
@@ -567,6 +570,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
 
     if not empty_ids:
         logger.info("Step 3: No empty blocklists found.")
+        gc.collect()
         return
 
     logger.info("Purging %s empty blocklists from database...", len(empty_ids))
@@ -582,6 +586,7 @@ def step_3_purge_empty_blocklists(conn: sqlite3.Connection) -> None:
                 f"DELETE FROM adlist WHERE id IN ({placeholders});", tuple(chunk)
             )
     logger.info("Step 3 completed. Purged %s empty adlists.", len(empty_ids))
+    gc.collect()
 
 
 @retry_on_db_lock()
@@ -693,6 +698,7 @@ def step_4_process_minor_blocklists(conn: sqlite3.Connection) -> None:
         )
     else:
         logger.info("Step 4 completed. No valid domains extracted from minor URLs.")
+    gc.collect()
 
 
 @retry_on_db_lock()
@@ -747,6 +753,7 @@ def step_5_purge_minor_blocklists_from_db(conn: sqlite3.Connection) -> None:
             )
 
     logger.info("Step 5 completed. Purged %s matching minor adlists.", len(target_ids))
+    gc.collect()
 
 
 def stop_pihole_container() -> None:
