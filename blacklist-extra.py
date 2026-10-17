@@ -7,6 +7,9 @@ import urllib.request
 from urllib.error import URLError, HTTPError
 from pathlib import Path
 import tempfile
+import subprocess
+import random
+import string
 
 # Configuration
 INPUT_FILE = "minor-lists.txt"
@@ -15,7 +18,7 @@ OUTPUT_FILE = OUTPUT_DIR / "blacklist-extra.txt"
 TIMEOUT = 15
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds
-USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/2.0)"
+USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/2.1)"
 MAX_CONTENT_SIZE = 50 * 1024 * 1024  # 50MB safety cap per list
 
 # Setup robust logging
@@ -92,6 +95,69 @@ def fetch_url_stream(url: str):
                 return None
     return None
 
+def generate_random_commit_msg(length=8) -> str:
+    chars = string.ascii_lowercase + string.digits
+    return "".join(random.choices(chars, k=length))
+
+def git_commit_and_push():
+    try:
+        if not Path(".git").exists():
+            logging.warning("Not a git repository. Skipping git commit and push.")
+            return
+
+        # Ensure local git identity is configured to prevent commit rejections on fresh environments
+        subprocess.run(["git", "config", "local.user.name", "Pihole Aggregator Bot"], capture_output=True, text=True)
+        subprocess.run(["git", "config", "local.user.email", "aggregator@bot.local"], capture_output=True, text=True)
+
+        # Stage the generated blacklist file
+        subprocess.run(["git", "add", str(OUTPUT_FILE)], check=True, capture_output=True, text=True)
+
+        # Check if there are actual changes to commit
+        status_res = subprocess.run(["git", "status", "--porcelain"], check=True, capture_output=True, text=True)
+        if not status_res.stdout.strip():
+            logging.info("No changes detected in git status. Skipping commit and push.")
+            return
+
+        # Generate random alphanumeric commit message
+        commit_msg = generate_random_commit_msg(8)
+
+        # Commit changes
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True, text=True)
+        logging.info(f"Committed changes with message: {commit_msg}")
+
+        # Resilient push logic with automatic rebase/pull handling and retry attempts
+        push_success = False
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                # Try standard push first
+                push_res = subprocess.run(["git", "push"], capture_output=True, text=True)
+                if push_res.returncode == 0:
+                    push_success = True
+                    break
+                
+                # If push failed due to remote divergence (non-fast-forward), pull with rebase and retry
+                if "fetch first" in push_res.stderr or "rejected" in push_res.stderr or "diverged" in push_res.stderr:
+                    logging.warning("Remote repository has diverged. Attempting git pull --rebase...")
+                    subprocess.run(["git", "pull", "--rebase", "--autostash"], check=True, capture_output=True, text=True)
+                else:
+                    logging.warning(f"Push attempt {attempt} failed: {push_res.stderr.strip()}")
+
+                time.sleep(RETRY_BACKOFF * attempt)
+            except subprocess.CalledProcessError as e:
+                logging.warning(f"Git push retry {attempt} encountered an error: {e.stderr.strip() if e.stderr else str(e)}")
+                time.sleep(RETRY_BACKOFF * attempt)
+
+        if push_success:
+            logging.info("Successfully pushed changes to GitHub.")
+        else:
+            logging.error("All git push attempts failed. Local commit was created successfully, but remote push could not be completed.")
+
+    except subprocess.CalledProcessError as e:
+        error_output = e.stderr.strip() if e.stderr else str(e)
+        logging.error(f"Git operation failed: {error_output}")
+    except Exception as e:
+        logging.error(f"Unexpected error during git automation: {e}")
+
 def main():
     input_path = Path(INPUT_FILE)
     if not input_path.exists():
@@ -119,7 +185,6 @@ def main():
             continue
 
         try:
-            # Stream line-by-line to maintain minimal RAM usage
             for line_bytes in response:
                 try:
                     line = line_bytes.decode("utf-8", errors="ignore")
@@ -136,17 +201,14 @@ def main():
             except Exception:
                 pass
 
-        # Polite delay between requests to protect target servers
         time.sleep(1)
 
     if not unique_domains:
         logging.error("No valid domains collected. Aborting to protect existing blocklist integrity.")
         sys.exit(1)
 
-    # Ensure output directory exists
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Atomic write pattern to prevent half-written or corrupted output files
     temp_file_path = None
     try:
         with tempfile.NamedTemporaryFile("w", dir=OUTPUT_DIR, delete=False, encoding="utf-8") as tmp:
@@ -155,7 +217,6 @@ def main():
             for domain in sorted_domains:
                 tmp.write(domain + "\n")
         
-        # Atomic file replacement
         temp_file_path.replace(OUTPUT_FILE)
         logging.info(f"Successfully updated '{OUTPUT_FILE}' with {len(sorted_domains)} unique domains.")
     except Exception as e:
@@ -166,6 +227,9 @@ def main():
             except Exception:
                 pass
         sys.exit(1)
+
+    # Automatically commit and push changes to GitHub with bulletproof error recovery
+    git_commit_and_push()
 
 if __name__ == "__main__":
     main()
