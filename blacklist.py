@@ -3,6 +3,8 @@ import re
 import sqlite3
 import logging
 import tempfile
+import subprocess
+import secrets
 from typing import Set, List, Final
 from dataclasses import dataclass, field
 
@@ -33,7 +35,7 @@ class PiholeManager:
         self.config = config
 
     def _get_db_connection(self) -> sqlite3.Connection:
-        """Establish a robust SQLite connection with a timeout and row factory."""
+        """Establish a robust SQLite connection with a timeout and WAL journal mode."""
         if not os.path.exists(self.config.db_path):
             raise FileNotFoundError(f"Gravity database not found at {self.config.db_path}")
         conn = sqlite3.connect(self.config.db_path, timeout=15.0)
@@ -46,10 +48,9 @@ class PiholeManager:
         directory = os.path.dirname(file_path)
         os.makedirs(directory, exist_ok=True)
         
-        dir_name = os.path.dirname(file_path)
         base_name = os.path.basename(file_path)
         
-        with tempfile.NamedTemporaryFile("w", dir=dir_name, prefix=f".{base_name}.", delete=False, encoding="utf-8") as tf:
+        with tempfile.NamedTemporaryFile("w", dir=directory, prefix=f".{base_name}.", delete=False, encoding="utf-8") as tf:
             for line in lines:
                 tf.write(f"{line}\n")
             temp_name = tf.name
@@ -194,7 +195,6 @@ class PiholeManager:
                     if norm_addr in normalized_exclusions:
                         continue
                     if status == 3:
-                        # Status 3: unavailable with local copy, left untouched per requirements
                         continue
                     if number == 0 or status == 4:
                         lists_to_remove.append(address)
@@ -305,12 +305,66 @@ class PiholeManager:
         except Exception as e:
             logger.error(f"Database deletion failed in Step D: {e}")
 
+    def run_step_git_push(self) -> None:
+        """Step E: Stage changes, commit with a randomized hexadecimal message, and push to remote repository."""
+        logger.info("Starting Step E: Committing and pushing changes to GitHub...")
+        
+        git_dir = self.config.script_dir
+        if not os.path.isdir(os.path.join(git_dir, ".git")):
+            logger.error(f"Not a valid git repository: {git_dir}")
+            return
+
+        def run_git_cmd(args: List[str]) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git"] + args,
+                cwd=git_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False
+            )
+
+        # Stage all updated files
+        res_add = run_git_cmd(["add", "."])
+        if res_add.returncode != 0:
+            logger.error(f"Failed to stage git changes: {res_add.stderr.strip()}")
+            return
+
+        # Check if there are any staged changes to commit
+        res_status = run_git_cmd(["status", "--porcelain"])
+        if res_status.returncode != 0:
+            logger.error(f"Failed to check git status: {res_status.stderr.strip()}")
+            return
+
+        if not res_status.stdout.strip():
+            logger.info("No changes detected to commit. Skipping git commit and push.")
+            return
+
+        # Generate a secure randomized hexadecimal commit message (16 characters)
+        commit_message = secrets.token_hex(8)
+
+        # Commit changes
+        res_commit = run_git_cmd(["commit", "-m", commit_message])
+        if res_commit.returncode != 0:
+            logger.error(f"Failed to commit git changes: {res_commit.stderr.strip()}")
+            return
+        logger.info(f"Successfully committed changes with message: {commit_message}")
+
+        # Push to remote repository
+        res_push = run_git_cmd(["push"])
+        if res_push.returncode != 0:
+            logger.error(f"Failed to push changes to remote: {res_push.stderr.strip()}")
+            return
+        
+        logger.info("Successfully pushed changes to GitHub remote repository.")
+
     def execute(self) -> None:
         logger.info("Starting Pi-hole production maintenance and synchronization sequence.")
         self.run_step_a()
         self.run_step_b()
         self.run_step_c()
         self.run_step_d()
+        self.run_step_git_push()
         logger.info("All maintenance sequences completed successfully.")
 
 if __name__ == "__main__":
