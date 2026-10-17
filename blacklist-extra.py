@@ -18,8 +18,16 @@ OUTPUT_FILE = OUTPUT_DIR / "blacklist-extra.txt"
 TIMEOUT = 15
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds
-USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/2.1)"
+USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/2.2)"
 MAX_CONTENT_SIZE = 50 * 1024 * 1024  # 50MB safety cap per list
+
+# URLs explicitly excluded from any operation or inclusion
+EXCLUSION_URLS = {
+    "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt",
+    "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt",
+    "https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/whitelist.txt",
+    "https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/healthcheck.txt",
+}
 
 # Setup robust logging
 logging.basicConfig(
@@ -129,13 +137,11 @@ def git_commit_and_push():
         push_success = False
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                # Try standard push first
                 push_res = subprocess.run(["git", "push"], capture_output=True, text=True)
                 if push_res.returncode == 0:
                     push_success = True
                     break
                 
-                # If push failed due to remote divergence (non-fast-forward), pull with rebase and retry
                 if "fetch first" in push_res.stderr or "rejected" in push_res.stderr or "diverged" in push_res.stderr:
                     logging.warning("Remote repository has diverged. Attempting git pull --rebase...")
                     subprocess.run(["git", "pull", "--rebase", "--autostash"], check=True, capture_output=True, text=True)
@@ -165,10 +171,15 @@ def main():
         sys.exit(1)
 
     try:
-        urls = [
-            line.strip() for line in input_path.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
+        urls = []
+        for line in input_path.read_text(encoding="utf-8").splitlines():
+            cleaned = line.strip()
+            if not cleaned or cleaned.startswith("#"):
+                continue
+            if cleaned in EXCLUSION_URLS:
+                logging.info(f"Skipping excluded URL found in {INPUT_FILE}: {cleaned}")
+                continue
+            urls.append(cleaned)
     except Exception as e:
         logging.error(f"Failed to read input file: {e}")
         sys.exit(1)
