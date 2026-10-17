@@ -305,9 +305,47 @@ class PiholeManager:
         except Exception as e:
             logger.error(f"Database deletion failed in Step D: {e}")
 
-    def run_step_git_push(self) -> None:
-        """Step E: Stage changes, commit with a randomized hexadecimal message, and push to remote repository."""
-        logger.info("Starting Step E: Committing and pushing changes to GitHub...")
+    def run_step_e(self) -> None:
+        """Step E: Fetch links from minor-lists.txt and remove any matching adlists from the database."""
+        logger.info("Starting Step E: Processing minor-lists.txt database cleanup...")
+        
+        minor_lists_file_path = os.path.join(self.config.script_dir, "minor-lists.txt")
+        if not os.path.exists(minor_lists_file_path):
+            logger.info(f"{minor_lists_file_path} does not exist. Skipping cleanup.")
+            return
+
+        file_urls: Set[str] = set()
+        try:
+            with open(minor_lists_file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    url = line.strip()
+                    if url and not url.startswith("#"):
+                        file_urls.add(url)
+        except Exception as e:
+            logger.error(f"Error reading {minor_lists_file_path}: {e}")
+            return
+
+        if not file_urls:
+            logger.info("No URLs found in minor-lists.txt.")
+            return
+
+        try:
+            with self._get_db_connection() as conn:
+                cursor = conn.cursor()
+                deleted_count = 0
+                for url in sorted(file_urls):
+                    cursor.execute("DELETE FROM adlist WHERE address = ?", (url,))
+                    if cursor.rowcount > 0:
+                        logger.info(f"Removed adlist matching minor-lists.txt from database: {url}")
+                        deleted_count += cursor.rowcount
+                conn.commit()
+                logger.info(f"Successfully deleted {deleted_count} matching adlists from gravity.db based on minor-lists.txt.")
+        except Exception as e:
+            logger.error(f"Database deletion failed in Step E: {e}")
+
+    def run_step_f(self) -> None:
+        """Step F: Stage changes, commit with a randomized hexadecimal message, and push to remote repository."""
+        logger.info("Starting Step F: Committing and pushing changes to GitHub...")
         
         git_dir = self.config.script_dir
         if not os.path.isdir(os.path.join(git_dir, ".git")):
@@ -324,13 +362,11 @@ class PiholeManager:
                 check=False
             )
 
-        # Stage all updated files
         res_add = run_git_cmd(["add", "."])
         if res_add.returncode != 0:
             logger.error(f"Failed to stage git changes: {res_add.stderr.strip()}")
             return
 
-        # Check if there are any staged changes to commit
         res_status = run_git_cmd(["status", "--porcelain"])
         if res_status.returncode != 0:
             logger.error(f"Failed to check git status: {res_status.stderr.strip()}")
@@ -340,17 +376,14 @@ class PiholeManager:
             logger.info("No changes detected to commit. Skipping git commit and push.")
             return
 
-        # Generate a secure randomized hexadecimal commit message (16 characters)
         commit_message = secrets.token_hex(8)
 
-        # Commit changes
         res_commit = run_git_cmd(["commit", "-m", commit_message])
         if res_commit.returncode != 0:
             logger.error(f"Failed to commit git changes: {res_commit.stderr.strip()}")
             return
         logger.info(f"Successfully committed changes with message: {commit_message}")
 
-        # Push to remote repository
         res_push = run_git_cmd(["push"])
         if res_push.returncode != 0:
             logger.error(f"Failed to push changes to remote: {res_push.stderr.strip()}")
@@ -364,7 +397,8 @@ class PiholeManager:
         self.run_step_b()
         self.run_step_c()
         self.run_step_d()
-        self.run_step_git_push()
+        self.run_step_e()
+        self.run_step_f()
         logger.info("All maintenance sequences completed successfully.")
 
 if __name__ == "__main__":
