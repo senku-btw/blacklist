@@ -240,8 +240,8 @@ class PiholeManager:
             logger.info("No empty or inaccessible adlists met the criteria for database removal.")
 
     def run_step_d(self) -> None:
-        """Step D: Extract minor blocklists matching criteria, sync atomically with minor-lists.txt, and delete from DB."""
-        logger.info("Starting Step D: Processing minor blocklists...")
+        """Step D: Extract adlists with empty comments, sync atomically with minor-lists.txt, and delete from DB."""
+        logger.info("Starting Step D: Processing adlists with empty comments...")
         
         normalized_exclusions = {self.normalize_url(url) for url in self.config.exclusion_urls}
         minor_urls: Set[str] = set()
@@ -250,12 +250,8 @@ class PiholeManager:
             with self._get_db_connection() as conn:
                 cursor = conn.cursor()
                 query = """
-                    SELECT DISTINCT a.address FROM adlist a
-                    JOIN adlist_by_group alg ON a.id = alg.adlist_id
-                    JOIN "group" g ON alg.group_id = g.id
-                    WHERE (g.name = 'Default' OR g.id = 1)
-                      AND (a.comment IS NULL OR a.comment = '')
-                      AND a.number < 100000
+                    SELECT DISTINCT address FROM adlist
+                    WHERE comment IS NULL OR comment = ''
                 """
                 cursor.execute(query)
                 for row in cursor.fetchall():
@@ -304,7 +300,7 @@ class PiholeManager:
                     cursor.execute("DELETE FROM adlist WHERE address = ?", (url,))
                     deleted_count += cursor.rowcount
                 conn.commit()
-                logger.info(f"Successfully deleted {deleted_count} minor lists from gravity.db.")
+                logger.info(f"Successfully deleted {deleted_count} empty-comment lists from gravity.db.")
         except Exception as e:
             logger.error(f"Database deletion failed in Step D: {e}")
 
