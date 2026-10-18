@@ -5,7 +5,9 @@ import logging
 import tempfile
 import subprocess
 import secrets
-from typing import Set, List, Final
+from pathlib import Path
+from typing import Set, List, Final, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 # Configure robust logging with granular formatting
@@ -17,8 +19,8 @@ logger = logging.getLogger("PiholeProductionManager")
 
 @dataclass(frozen=True)
 class Config:
-    db_path: str = "/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"
-    script_dir: str = field(default_factory=lambda: os.path.dirname(os.path.abspath(__file__)))
+    db_path: Path = field(default_factory=lambda: Path("/mnt/dietpi_userdata/docker/primary-stack/pihole/etc-pihole/gravity.db"))
+    script_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent)
     exclusion_urls: Final[Set[str]] = field(default_factory=lambda: {
         "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt",
         "https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt",
@@ -26,7 +28,7 @@ class Config:
         "https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/healthcheck.txt",
     })
 
-DOMAIN_REGEX = re.compile(
+DOMAIN_REGEX: Final[re.Pattern] = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
 )
 
@@ -34,28 +36,44 @@ class PiholeManager:
     def __init__(self, config: Config = Config()) -> None:
         self.config = config
 
-    def _get_db_connection(self) -> sqlite3.Connection:
-        """Establish a robust SQLite connection with a timeout and WAL journal mode."""
-        if not os.path.exists(self.config.db_path):
+    @contextmanager
+    def _get_db_connection(self) -> Generator[sqlite3.Connection, None, None]:
+        """Establish a robust, safe SQLite connection context manager with WAL mode and proper cleanup."""
+        if not self.config.db_path.exists():
             raise FileNotFoundError(f"Gravity database not found at {self.config.db_path}")
+        
         conn = sqlite3.connect(self.config.db_path, timeout=15.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            yield conn
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     @staticmethod
-    def _atomic_write(file_path: str, lines: List[str]) -> None:
-        """Write lines atomically to prevent file corruption during failures."""
-        directory = os.path.dirname(file_path)
-        os.makedirs(directory, exist_ok=True)
+    def _atomic_write(file_path: Path, lines: List[str]) -> None:
+        """Write lines atomically using a temporary file to prevent file corruption during failures."""
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        base_name = file_path.name
         
-        base_name = os.path.basename(file_path)
-        
-        with tempfile.NamedTemporaryFile("w", dir=directory, prefix=f".{base_name}.", delete=False, encoding="utf-8") as tf:
-            for line in lines:
-                tf.write(f"{line}\n")
-            temp_name = tf.name
-        
-        os.replace(temp_name, file_path)
+        tf_name = None
+        try:
+            with tempfile.NamedTemporaryFile("w", dir=file_path.parent, prefix=f".{base_name}.", delete=False, encoding="utf-8") as tf:
+                for line in lines:
+                    tf.write(f"{line}\n")
+                tf_name = tf.name
+            
+            os.replace(tf_name, file_path)
+        except Exception:
+            if tf_name and os.path.exists(tf_name):
+                try:
+                    os.unlink(tf_name)
+                except OSError:
+                    pass
+            raise
 
     @staticmethod
     def sanitize_domain(domain: str) -> str:
@@ -108,11 +126,11 @@ class PiholeManager:
 
         immutable_db_domains: frozenset = frozenset(db_domains)
 
-        blacklists_dir = os.path.join(self.config.script_dir, "blacklists")
-        blacklist_file_path = os.path.join(blacklists_dir, "blacklist.txt")
+        blacklists_dir = self.config.script_dir / "blacklists"
+        blacklist_file_path = blacklists_dir / "blacklist.txt"
 
         file_domains: Set[str] = set()
-        if os.path.exists(blacklist_file_path):
+        if blacklist_file_path.exists():
             try:
                 with open(blacklist_file_path, "r", encoding="utf-8") as f:
                     for line in f:
@@ -170,8 +188,8 @@ class PiholeManager:
         immutable_regex: frozenset = frozenset(regex_rules)
         sorted_regex: List[str] = sorted(list(immutable_regex))
 
-        regex_dir = os.path.join(self.config.script_dir, "regex")
-        regex_file_path = os.path.join(regex_dir, "regex_deny.txt")
+        regex_dir = self.config.script_dir / "regex"
+        regex_file_path = regex_dir / "regex_deny.txt"
 
         try:
             self._atomic_write(regex_file_path, sorted_regex)
@@ -202,9 +220,9 @@ class PiholeManager:
             logger.error(f"Database query failed in Step C: {e}")
             return
 
-        empty_lists_file_path = os.path.join(self.config.script_dir, "empty-lists.txt")
+        empty_lists_file_path = self.config.script_dir / "empty-lists.txt"
         file_urls: Set[str] = set()
-        if os.path.exists(empty_lists_file_path):
+        if empty_lists_file_path.exists():
             try:
                 with open(empty_lists_file_path, "r", encoding="utf-8") as f:
                     for line in f:
@@ -264,10 +282,10 @@ class PiholeManager:
             return
 
         immutable_minor_urls: frozenset = frozenset(minor_urls)
-        minor_lists_file_path = os.path.join(self.config.script_dir, "minor-lists.txt")
+        minor_lists_file_path = self.config.script_dir / "minor-lists.txt"
 
         existing_minor_file_urls: List[str] = []
-        if os.path.exists(minor_lists_file_path):
+        if minor_lists_file_path.exists():
             try:
                 with open(minor_lists_file_path, "r", encoding="utf-8") as f:
                     existing_minor_file_urls = [line.strip() for line in f if line.strip()]
@@ -309,8 +327,8 @@ class PiholeManager:
         logger.info("Starting Step E: Processing minor-lists.txt database cleanup...")
         
         normalized_exclusions = {self.normalize_url(url) for url in self.config.exclusion_urls}
-        minor_lists_file_path = os.path.join(self.config.script_dir, "minor-lists.txt")
-        if not os.path.exists(minor_lists_file_path):
+        minor_lists_file_path = self.config.script_dir / "minor-lists.txt"
+        if not minor_lists_file_path.exists():
             logger.info(f"{minor_lists_file_path} does not exist. Skipping cleanup.")
             return
 
@@ -329,7 +347,6 @@ class PiholeManager:
             logger.info("No URLs found in minor-lists.txt.")
             return
 
-        # Clean up minor-lists.txt as well to remove any accidentally present exclusion URLs permanently
         cleaned_file_urls = [url for url in sorted(file_urls) if self.normalize_url(url) not in normalized_exclusions]
         if len(cleaned_file_urls) != len(file_urls):
             try:
@@ -361,7 +378,7 @@ class PiholeManager:
         logger.info("Starting Step F: Committing and pushing changes to GitHub...")
         
         git_dir = self.config.script_dir
-        if not os.path.isdir(os.path.join(git_dir, ".git")):
+        if not (git_dir / ".git").is_dir():
             logger.error(f"Not a valid git repository: {git_dir}")
             return
 
@@ -406,13 +423,17 @@ class PiholeManager:
 
     def execute(self) -> None:
         logger.info("Starting Pi-hole production maintenance and synchronization sequence.")
-        self.run_step_a()
-        self.run_step_b()
-        self.run_step_c()
-        self.run_step_d()
-        self.run_step_e()
-        self.run_step_f()
-        logger.info("All maintenance sequences completed successfully.")
+        try:
+            self.run_step_a()
+            self.run_step_b()
+            self.run_step_c()
+            self.run_step_d()
+            self.run_step_e()
+            self.run_step_f()
+            logger.info("All maintenance sequences completed successfully.")
+        except Exception as e:
+            logger.critical(f"Critical unhandled exception during execution sequence: {e}", exc_info=True)
+            raise
 
 if __name__ == "__main__":
     manager = PiholeManager()
