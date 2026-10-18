@@ -16,12 +16,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 INPUT_FILE = "minor-lists.txt"
 OUTPUT_DIR = Path("blacklists")
 OUTPUT_FILE = OUTPUT_DIR / "blacklist-extra.txt"
-TIMEOUT = 20
+TIMEOUT = 25
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds
-USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/3.0)"
+USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/4.0)"
 MAX_CONTENT_SIZE = 50 * 1024 * 1024  # 50MB safety cap per list
-MAX_WORKERS = 8  # Concurrent threads for fetching lists
+MAX_WORKERS = 10  # Concurrent threads
 
 # URLs explicitly excluded from any operation or inclusion
 EXCLUSION_URLS = {
@@ -43,9 +43,14 @@ DOMAIN_REGEX = re.compile(
     r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
 )
 
+# Broad fallback domain extractor for messy or unstructured lists
+FALLBACK_DOMAIN_REGEX = re.compile(
+    r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b"
+)
+
 EXCLUDED_DOMAINS = {
     "localhost", "local", "broadcasthost", "ip6-localhost", "ip6-loopback",
-    "example.com", "example.org", "example.net", "test", "invalid"
+    "example.com", "example.org", "example.net", "test", "invalid", "localhost.localdomain"
 }
 
 def is_valid_domain(domain: str) -> bool:
@@ -56,55 +61,79 @@ def is_valid_domain(domain: str) -> bool:
         return False
     return bool(DOMAIN_REGEX.match(domain_lower))
 
-def parse_line_to_domain(line: str) -> str | None:
+def parse_line_strategic(line: str) -> set[str]:
+    found_domains = set()
     line = line.strip()
     if not line:
-        return None
+        return found_domains
 
-    # Handle commented-out hosts entries (e.g., #0.0.0.0 domain or # 127.0.0.1 domain)
+    # Step 3a: Handle commented-out hosts entries or standard filters
     if line.startswith("#"):
-        potential_hosts_line = line.lstrip("#").strip()
-        if potential_hosts_line.startswith(("0.0.0.0", "127.0.0.1", "::1", "localhost", "127.0.0.2", "0.0.0.1")):
-            line = potential_hosts_line
+        uncommented = line.lstrip("#").strip()
+        if uncommented.startswith(("0.0.0.0", "127.0.0.1", "::1", "localhost", "127.0.0.2", "0.0.0.1", "255.255.255.255")):
+            line = uncommented
         else:
-            return None
-    elif line.startswith(("!", "[", "//", "@")):
-        return None
+            return found_domains
+    elif line.startswith(("!", "[", "//", "@", ":", ";")):
+        return found_domains
 
-    # Remove inline comments safely
-    if "#" in line:
-        line = line.split("#", 1)[0].strip()
-    if "!" in line:
-        line = line.split("!", 1)[0].strip()
+    # Step 3b: Strip inline comments
+    for char in ("#", "!", "//"):
+        if char in line:
+            line = line.split(char, 1)[0].strip()
 
-    # Handle Adblock format (e.g., ||example.com^...)
+    # Step 3c: Normalize Adblock rules (e.g., ||example.com^$third-party)
     if line.startswith("||"):
         line = line[2:]
+    elif line.startswith("|"):
+        line = line[1:]
+    
     line = line.split("^")[0].split("$")[0].strip()
 
-    # Handle hosts file format or plain domain lists separated by whitespace/tabs
+    # Step 3d: Strip trailing paths, ports, or protocols if present
+    if "://" in line:
+        line = line.split("://", 1)[1]
+    line = line.split("/")[0].split(":")[0].strip()
+
+    # Step 3e: Hosts file & token parsing
     parts = line.split()
     if len(parts) >= 2:
+        # Check standard IP-to-domain mapping positions
         for part in parts[1:]:
-            if is_valid_domain(part):
-                return part.lower()
+            cleaned_part = part.strip(".,;:*")
+            if is_valid_domain(cleaned_part):
+                found_domains.add(cleaned_part.lower())
     elif len(parts) == 1:
-        candidate = parts[0]
+        candidate = parts[0].strip(".,;:*")
         if is_valid_domain(candidate):
-            return candidate.lower()
+            found_domains.add(candidate.lower())
 
-    return None
+    # Step 4: Fallback heuristic scan if structural parse found nothing on complex lines
+    if not found_domains and len(line) > 4:
+        for match in FALLBACK_DOMAIN_REGEX.findall(line):
+            if is_valid_domain(match):
+                found_domains.add(match.lower())
+
+    return found_domains
 
 def fetch_and_parse_url(url: str) -> tuple[str, set[str], int]:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT, "Accept": "text/plain, */*"}
+        headers={"User-Agent": USER_AGENT, "Accept": "text/plain, application/text, */*"}
     )
     
     response = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = urllib.request.urlopen(req, timeout=TIMEOUT)
+            
+            # Step 1: Content-Type Gatekeeper
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "text/html" in content_type:
+                logging.warning(f"Skipping {url}: Received HTML content instead of plain text blocklist.")
+                response.close()
+                return url, set(), 0
+
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_CONTENT_SIZE:
                 logging.warning(f"Skipping {url}: Payload exceeds safety limit ({content_length} bytes)")
@@ -126,15 +155,14 @@ def fetch_and_parse_url(url: str) -> tuple[str, set[str], int]:
     try:
         for line_bytes in response:
             try:
-                # Fallback decoding strategy for mixed-encoding blocklists
                 try:
                     line = line_bytes.decode("utf-8")
                 except UnicodeDecodeError:
                     line = line_bytes.decode("latin-1", errors="ignore")
 
-                domain = parse_line_to_domain(line)
-                if domain:
-                    domains.add(domain)
+                extracted = parse_line_strategic(line)
+                if extracted:
+                    domains.update(extracted)
             except Exception:
                 continue
     except Exception as e:
@@ -226,7 +254,6 @@ def main():
 
     unique_domains = set()
 
-    # Concurrent multithreaded execution for peak performance and resilience
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_url = {executor.submit(fetch_and_parse_url, url): url for url in urls}
         
