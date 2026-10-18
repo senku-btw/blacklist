@@ -258,6 +258,60 @@ class PiholeManager:
         else:
             logger.info("No empty or inaccessible adlists met the criteria for database removal.")
 
+    def run_step_g(self) -> None:
+        """Step G: Fetch remote blocklists and remove any matching entries from minor-lists.txt."""
+        logger.info("Starting Step G: Processing remote blocklists against minor-lists.txt...")
+        
+        remote_url = "https://raw.githubusercontent.com/senku-btw/blocklists/refs/heads/main/blocklists.txt"
+        remote_urls: Set[str] = set()
+        
+        try:
+            req = urllib.request.Request(
+                remote_url,
+                headers={"User-Agent": "PiholeProductionManager"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as response:
+                for line in response:
+                    decoded = line.decode("utf-8").strip()
+                    if decoded and not decoded.startswith("#"):
+                        remote_urls.add(decoded)
+        except Exception as e:
+            logger.error(f"Failed to fetch remote blocklists from {remote_url}: {e}")
+            return
+
+        minor_lists_file_path = self.config.script_dir / "minor-lists.txt"
+        if not minor_lists_file_path.exists():
+            logger.info(f"{minor_lists_file_path} does not exist. Skipping Step G cleanup.")
+            return
+
+        existing_minor_urls: List[str] = []
+        try:
+            with open(minor_lists_file_path, "r", encoding="utf-8") as f:
+                existing_minor_urls = [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            logger.error(f"Error reading {minor_lists_file_path}: {e}")
+            return
+
+        normalized_remote_urls = {self.normalize_url(u) for u in remote_urls}
+        
+        filtered_minor_urls: List[str] = []
+        removed_count = 0
+        for url in existing_minor_urls:
+            if self.normalize_url(url) in normalized_remote_urls:
+                removed_count += 1
+                logger.info(f"Removing URL present in remote blocklists from minor-lists.txt: {url}")
+            else:
+                filtered_minor_urls.append(url)
+
+        if removed_count > 0:
+            try:
+                self._atomic_write(minor_lists_file_path, filtered_minor_urls)
+                logger.info(f"Successfully removed {removed_count} matching entries from {minor_lists_file_path}.")
+            except Exception as e:
+                logger.error(f"Atomic write failed for {minor_lists_file_path} in Step G: {e}")
+        else:
+            logger.info("No matching entries found between remote blocklists and minor-lists.txt.")
+
     def run_step_d(self) -> None:
         """Step D: Extract adlists with empty comments, sync atomically with minor-lists.txt, and delete from DB."""
         logger.info("Starting Step D: Processing adlists with empty comments...")
@@ -422,69 +476,15 @@ class PiholeManager:
         
         logger.info("Successfully pushed changes to GitHub remote repository.")
 
-    def run_step_g(self) -> None:
-        """Step G: Fetch remote blocklists and remove any matching entries from minor-lists.txt."""
-        logger.info("Starting Step G: Processing remote blocklists against minor-lists.txt...")
-        
-        remote_url = "https://raw.githubusercontent.com/senku-btw/blocklists/refs/heads/main/blocklists.txt"
-        remote_urls: Set[str] = set()
-        
-        try:
-            req = urllib.request.Request(
-                remote_url,
-                headers={"User-Agent": "PiholeProductionManager"}
-            )
-            with urllib.request.urlopen(req, timeout=15) as response:
-                for line in response:
-                    decoded = line.decode("utf-8").strip()
-                    if decoded and not decoded.startswith("#"):
-                        remote_urls.add(decoded)
-        except Exception as e:
-            logger.error(f"Failed to fetch remote blocklists from {remote_url}: {e}")
-            return
-
-        minor_lists_file_path = self.config.script_dir / "minor-lists.txt"
-        if not minor_lists_file_path.exists():
-            logger.info(f"{minor_lists_file_path} does not exist. Skipping Step G cleanup.")
-            return
-
-        existing_minor_urls: List[str] = []
-        try:
-            with open(minor_lists_file_path, "r", encoding="utf-8") as f:
-                existing_minor_urls = [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            logger.error(f"Error reading {minor_lists_file_path}: {e}")
-            return
-
-        normalized_remote_urls = {self.normalize_url(u) for u in remote_urls}
-        
-        filtered_minor_urls: List[str] = []
-        removed_count = 0
-        for url in existing_minor_urls:
-            if self.normalize_url(url) in normalized_remote_urls:
-                removed_count += 1
-                logger.info(f"Removing URL present in remote blocklists from minor-lists.txt: {url}")
-            else:
-                filtered_minor_urls.append(url)
-
-        if removed_count > 0:
-            try:
-                self._atomic_write(minor_lists_file_path, filtered_minor_urls)
-                logger.info(f"Successfully removed {removed_count} matching entries from {minor_lists_file_path}.")
-            except Exception as e:
-                logger.error(f"Atomic write failed for {minor_lists_file_path} in Step G: {e}")
-        else:
-            logger.info("No matching entries found between remote blocklists and minor-lists.txt.")
-
     def execute(self) -> None:
         logger.info("Starting Pi-hole production maintenance and synchronization sequence.")
         try:
             self.run_step_a()
             self.run_step_b()
             self.run_step_c()
+            self.run_step_g()
             self.run_step_d()
             self.run_step_e()
-            self.run_step_g()
             self.run_step_f()
             logger.info("All maintenance sequences completed successfully.")
         except Exception as e:
