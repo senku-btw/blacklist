@@ -9,6 +9,7 @@ https://asc.hk/adplus.txt
 https://blocklistproject.github.io/Lists/whatsapp.txt
 https://azorult-tracker.net/api/list/domain?format=plain
 https://badblock.celenity.dev/wildcards-no-star/badblock.txt
+https://adguardteam.github.io/HostlistsRegistry/assets/filter_7.txt
 https://badblock.celenity.dev/wildcards-no-star/badblock_lite.txt
 https://badblock.celenity.dev/wildcards-no-star/brave.txt
 https://badblock.celenity.dev/wildcards-no-star/data-brokers.txt
