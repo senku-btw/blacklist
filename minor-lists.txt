@@ -6,6 +6,7 @@ https://adblock.mahakala.is
 https://adguardteam.github.io/HostlistsRegistry/assets/filter_50.txt
 https://anti-ad.net/domains.txt
 https://asc.hk/adplus.txt
+https://blocklistproject.github.io/Lists/whatsapp.txt
 https://azorult-tracker.net/api/list/domain?format=plain
 https://badblock.celenity.dev/wildcards-no-star/badblock.txt
 https://badblock.celenity.dev/wildcards-no-star/badblock_lite.txt
