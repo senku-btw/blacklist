@@ -10,16 +10,18 @@ import tempfile
 import subprocess
 import random
 import string
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configuration
 INPUT_FILE = "minor-lists.txt"
 OUTPUT_DIR = Path("blacklists")
 OUTPUT_FILE = OUTPUT_DIR / "blacklist-extra.txt"
-TIMEOUT = 15
+TIMEOUT = 20
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds
-USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/2.2)"
+USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/3.0)"
 MAX_CONTENT_SIZE = 50 * 1024 * 1024  # 50MB safety cap per list
+MAX_WORKERS = 8  # Concurrent threads for fetching lists
 
 # URLs explicitly excluded from any operation or inclusion
 EXCLUSION_URLS = {
@@ -62,22 +64,25 @@ def parse_line_to_domain(line: str) -> str | None:
     # Handle commented-out hosts entries (e.g., #0.0.0.0 domain or # 127.0.0.1 domain)
     if line.startswith("#"):
         potential_hosts_line = line.lstrip("#").strip()
-        if potential_hosts_line.startswith(("0.0.0.0", "127.0.0.1", "::1", "localhost", "127.0.0.2")):
+        if potential_hosts_line.startswith(("0.0.0.0", "127.0.0.1", "::1", "localhost", "127.0.0.2", "0.0.0.1")):
             line = potential_hosts_line
         else:
             return None
-    elif line.startswith(("!", "[", "//")):
+    elif line.startswith(("!", "[", "//", "@")):
         return None
 
-    # Remove inline comments
-    line = line.split("#")[0].split("!")[0].strip()
+    # Remove inline comments safely
+    if "#" in line:
+        line = line.split("#", 1)[0].strip()
+    if "!" in line:
+        line = line.split("!", 1)[0].strip()
 
     # Handle Adblock format (e.g., ||example.com^...)
     if line.startswith("||"):
         line = line[2:]
     line = line.split("^")[0].split("$")[0].strip()
 
-    # Handle hosts file format or plain domain lists
+    # Handle hosts file format or plain domain lists separated by whitespace/tabs
     parts = line.split()
     if len(parts) >= 2:
         for part in parts[1:]:
@@ -90,11 +95,13 @@ def parse_line_to_domain(line: str) -> str | None:
 
     return None
 
-def fetch_url_stream(url: str):
+def fetch_and_parse_url(url: str) -> tuple[str, set[str], int]:
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT}
+        headers={"User-Agent": USER_AGENT, "Accept": "text/plain, */*"}
     )
+    
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = urllib.request.urlopen(req, timeout=TIMEOUT)
@@ -102,16 +109,43 @@ def fetch_url_stream(url: str):
             if content_length and int(content_length) > MAX_CONTENT_SIZE:
                 logging.warning(f"Skipping {url}: Payload exceeds safety limit ({content_length} bytes)")
                 response.close()
-                return None
-            return response
+                return url, set(), 0
+            break
         except (URLError, HTTPError, TimeoutError, Exception) as e:
             logging.warning(f"Attempt {attempt}/{MAX_RETRIES} failed for {url}: {e}")
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_BACKOFF * attempt)
             else:
-                logging.error(f"Failed to fetch {url} after {MAX_RETRIES} attempts. Skipping.")
-                return None
-    return None
+                logging.error(f"Failed to fetch {url} after {MAX_RETRIES} attempts.")
+                return url, set(), 0
+
+    if not response:
+        return url, set(), 0
+
+    domains = set()
+    try:
+        for line_bytes in response:
+            try:
+                # Fallback decoding strategy for mixed-encoding blocklists
+                try:
+                    line = line_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    line = line_bytes.decode("latin-1", errors="ignore")
+
+                domain = parse_line_to_domain(line)
+                if domain:
+                    domains.add(domain)
+            except Exception:
+                continue
+    except Exception as e:
+        logging.error(f"Error streaming response from {url}: {e}")
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
+
+    return url, domains, len(domains)
 
 def generate_random_commit_msg(length=8) -> str:
     chars = string.ascii_lowercase + string.digits
@@ -123,27 +157,20 @@ def git_commit_and_push():
             logging.warning("Not a git repository. Skipping git commit and push.")
             return
 
-        # Ensure local git identity is configured to prevent commit rejections on fresh environments
         subprocess.run(["git", "config", "local.user.name", "Pihole Aggregator Bot"], capture_output=True, text=True)
         subprocess.run(["git", "config", "local.user.email", "aggregator@bot.local"], capture_output=True, text=True)
 
-        # Stage the generated blacklist file
         subprocess.run(["git", "add", str(OUTPUT_FILE)], check=True, capture_output=True, text=True)
 
-        # Check if there are actual changes to commit
         status_res = subprocess.run(["git", "status", "--porcelain"], check=True, capture_output=True, text=True)
         if not status_res.stdout.strip():
             logging.info("No changes detected in git status. Skipping commit and push.")
             return
 
-        # Generate random alphanumeric commit message
         commit_msg = generate_random_commit_msg(8)
-
-        # Commit changes
         subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True, text=True)
         logging.info(f"Committed changes with message: {commit_msg}")
 
-        # Resilient push logic with automatic rebase/pull handling and retry attempts
         push_success = False
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -166,7 +193,7 @@ def git_commit_and_push():
         if push_success:
             logging.info("Successfully pushed changes to GitHub.")
         else:
-            logging.error("All git push attempts failed. Local commit was created successfully, but remote push could not be completed.")
+            logging.error("All git push attempts failed. Local commit created successfully.")
 
     except subprocess.CalledProcessError as e:
         error_output = e.stderr.strip() if e.stderr else str(e)
@@ -194,38 +221,21 @@ def main():
         logging.error(f"Failed to read input file: {e}")
         sys.exit(1)
 
-    logging.info(f"Loaded {len(urls)} target URLs from {INPUT_FILE}")
+    total_urls = len(urls)
+    logging.info(f"Loaded {total_urls} target URLs from {INPUT_FILE}")
 
     unique_domains = set()
 
-    for i, url in enumerate(urls, 1):
-        response = fetch_url_stream(url)
-        if not response:
-            logging.info(f"Processing [{i}/{len(urls)}]: {url} | 0")
-            time.sleep(1)
-            continue
-
-        list_domain_count = 0
-        try:
-            for line_bytes in response:
-                try:
-                    line = line_bytes.decode("utf-8", errors="ignore")
-                    domain = parse_line_to_domain(line)
-                    if domain:
-                        list_domain_count += 1
-                        unique_domains.add(domain)
-                except Exception:
-                    continue
-        except Exception as e:
-            logging.error(f"Error reading stream from {url}: {e}")
-        finally:
-            try:
-                response.close()
-            except Exception:
-                pass
-
-        logging.info(f"Processing [{i}/{len(urls)}]: {url} | {list_domain_count}")
-        time.sleep(1)
+    # Concurrent multithreaded execution for peak performance and resilience
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_url = {executor.submit(fetch_and_parse_url, url): url for url in urls}
+        
+        completed_count = 0
+        for future in as_completed(future_to_url):
+            completed_count += 1
+            url, domains, count = future.result()
+            unique_domains.update(domains)
+            logging.info(f"Processing [{completed_count}/{total_urls}]: {url} | {count}")
 
     if not unique_domains:
         logging.error("No valid domains collected. Aborting to protect existing blocklist integrity.")
@@ -252,7 +262,6 @@ def main():
                 pass
         sys.exit(1)
 
-    # Automatically commit and push changes to GitHub with bulletproof error recovery
     git_commit_and_push()
 
 if __name__ == "__main__":
