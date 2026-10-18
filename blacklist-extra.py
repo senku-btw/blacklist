@@ -56,7 +56,17 @@ def is_valid_domain(domain: str) -> bool:
 
 def parse_line_to_domain(line: str) -> str | None:
     line = line.strip()
-    if not line or line.startswith(("#", "!", "[", "//")):
+    if not line:
+        return None
+
+    # Handle commented-out hosts entries (e.g., #0.0.0.0 domain or # 127.0.0.1 domain)
+    if line.startswith("#"):
+        potential_hosts_line = line.lstrip("#").strip()
+        if potential_hosts_line.startswith(("0.0.0.0", "127.0.0.1", "::1", "localhost", "127.0.0.2")):
+            line = potential_hosts_line
+        else:
+            return None
+    elif line.startswith(("!", "[", "//")):
         return None
 
     # Remove inline comments
@@ -189,18 +199,20 @@ def main():
     unique_domains = set()
 
     for i, url in enumerate(urls, 1):
-        logging.info(f"Processing [{i}/{len(urls)}]: {url}")
         response = fetch_url_stream(url)
         if not response:
+            logging.info(f"Processing [{i}/{len(urls)}]: {url} | 0")
             time.sleep(1)
             continue
 
+        list_domain_count = 0
         try:
             for line_bytes in response:
                 try:
                     line = line_bytes.decode("utf-8", errors="ignore")
                     domain = parse_line_to_domain(line)
                     if domain:
+                        list_domain_count += 1
                         unique_domains.add(domain)
                 except Exception:
                     continue
@@ -212,6 +224,7 @@ def main():
             except Exception:
                 pass
 
+        logging.info(f"Processing [{i}/{len(urls)}]: {url} | {list_domain_count}")
         time.sleep(1)
 
     if not unique_domains:
