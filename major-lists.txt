@@ -23,3 +23,5 @@ https://www.github.developerdan.com/hosts/lists/tracking-aggressive-extended.txt
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Tracking
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Dshield-Suspicious-Low.txt
 https://raw.githubusercontent.com/smed79/blacklist/master/hosts.txt
+https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_ads.txt
+https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_core.txt
