@@ -4,6 +4,7 @@ import sys
 import time
 import logging
 import urllib.request
+import argparse
 from urllib.error import URLError, HTTPError
 from pathlib import Path
 import tempfile
@@ -223,6 +224,14 @@ def git_commit_and_push():
         logging.error(f"Unexpected error during git automation: {e}")
 
 def main():
+    parser = argparse.ArgumentParser(description="Pihole Blacklist Aggregator")
+    parser.add_argument("--dry-run", action="store_true", help="Only count entries and migrate heavy lists without generating final outputs or git actions.")
+    args = parser.parse_args()
+    dry_run = args.dry_run
+
+    if dry_run:
+        logging.info("=== DRY RUN MODE ENABLED ===")
+
     input_path = Path(INPUT_FILE)
     if not input_path.exists():
         logging.error(f"Input file '{INPUT_FILE}' not found.")
@@ -255,7 +264,10 @@ def main():
         for future in as_completed(future_to_url):
             completed_count += 1
             url, domains, count = future.result()
-            unique_domains.update(domains)
+            
+            if not dry_run:
+                unique_domains.update(domains)
+
             logging.info(f"Processing [{completed_count}/{total_urls}]: {url} | {count}")
 
             if count > DOMAIN_THRESHOLD:
@@ -287,6 +299,10 @@ def main():
             logging.info(f"Appended {added_to_major} unique lists to {MAJOR_INPUT_FILE}.")
         except Exception as e:
             logging.error(f"Failed to migrate heavy lists to {MAJOR_INPUT_FILE}: {e}")
+
+    if dry_run:
+        logging.info("Dry run complete. Skipping final output generation and git actions.")
+        return
 
     if not unique_domains:
         logging.error("No valid domains collected. Aborting to protect existing blocklist integrity.")
