@@ -10,10 +10,12 @@ import tempfile
 import subprocess
 import random
 import string
+import gc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configuration
 INPUT_FILE = "minor-lists.txt"
+MAJOR_INPUT_FILE = "major-lists.txt"
 OUTPUT_DIR = Path("blacklists")
 OUTPUT_FILE = OUTPUT_DIR / "blacklist-extra.txt"
 TIMEOUT = 25
@@ -21,7 +23,8 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds
 USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/4.0)"
 MAX_CONTENT_SIZE = 50 * 1024 * 1024  # 50MB safety cap per list
-MAX_WORKERS = 10  # Concurrent threads
+MAX_WORKERS = 3  # Reduced concurrent threads to prevent OOM kills
+DOMAIN_THRESHOLD = 150000  # Threshold to move a list to major-lists.txt
 
 # URLs explicitly excluded from any operation or inclusion
 EXCLUSION_URLS = {
@@ -67,7 +70,6 @@ def parse_line_strategic(line: str) -> set[str]:
     if not line:
         return found_domains
 
-    # Step 3a: Handle commented-out hosts entries or standard filters
     if line.startswith("#"):
         uncommented = line.lstrip("#").strip()
         if uncommented.startswith(("0.0.0.0", "127.0.0.1", "::1", "localhost", "127.0.0.2", "0.0.0.1", "255.255.255.255")):
@@ -77,12 +79,10 @@ def parse_line_strategic(line: str) -> set[str]:
     elif line.startswith(("!", "[", "//", "@", ":", ";")):
         return found_domains
 
-    # Step 3b: Strip inline comments
     for char in ("#", "!", "//"):
         if char in line:
             line = line.split(char, 1)[0].strip()
 
-    # Step 3c: Normalize Adblock rules (e.g., ||example.com^$third-party)
     if line.startswith("||"):
         line = line[2:]
     elif line.startswith("|"):
@@ -90,15 +90,12 @@ def parse_line_strategic(line: str) -> set[str]:
     
     line = line.split("^")[0].split("$")[0].strip()
 
-    # Step 3d: Strip trailing paths, ports, or protocols if present
     if "://" in line:
         line = line.split("://", 1)[1]
     line = line.split("/")[0].split(":")[0].strip()
 
-    # Step 3e: Hosts file & token parsing
     parts = line.split()
     if len(parts) >= 2:
-        # Check standard IP-to-domain mapping positions
         for part in parts[1:]:
             cleaned_part = part.strip(".,;:*")
             if is_valid_domain(cleaned_part):
@@ -108,7 +105,6 @@ def parse_line_strategic(line: str) -> set[str]:
         if is_valid_domain(candidate):
             found_domains.add(candidate.lower())
 
-    # Step 4: Fallback heuristic scan if structural parse found nothing on complex lines
     if not found_domains and len(line) > 4:
         for match in FALLBACK_DOMAIN_REGEX.findall(line):
             if is_valid_domain(match):
@@ -126,8 +122,6 @@ def fetch_and_parse_url(url: str) -> tuple[str, set[str], int]:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = urllib.request.urlopen(req, timeout=TIMEOUT)
-            
-            # Step 1: Content-Type Gatekeeper
             content_type = response.headers.get("Content-Type", "").lower()
             if "text/html" in content_type:
                 logging.warning(f"Skipping {url}: Received HTML content instead of plain text blocklist.")
@@ -187,7 +181,6 @@ def git_commit_and_push():
 
         subprocess.run(["git", "config", "local.user.name", "Pihole Aggregator Bot"], capture_output=True, text=True)
         subprocess.run(["git", "config", "local.user.email", "aggregator@bot.local"], capture_output=True, text=True)
-
         subprocess.run(["git", "add", str(OUTPUT_FILE)], check=True, capture_output=True, text=True)
 
         status_res = subprocess.run(["git", "status", "--porcelain"], check=True, capture_output=True, text=True)
@@ -253,6 +246,7 @@ def main():
     logging.info(f"Loaded {total_urls} target URLs from {INPUT_FILE}")
 
     unique_domains = set()
+    urls_to_migrate = []
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_url = {executor.submit(fetch_and_parse_url, url): url for url in urls}
@@ -263,6 +257,36 @@ def main():
             url, domains, count = future.result()
             unique_domains.update(domains)
             logging.info(f"Processing [{completed_count}/{total_urls}]: {url} | {count}")
+
+            if count > DOMAIN_THRESHOLD:
+                logging.info(f"List exceeded threshold ({count} > {DOMAIN_THRESHOLD}). Marking for migration to {MAJOR_INPUT_FILE}.")
+                urls_to_migrate.append(url)
+            
+            if completed_count % 20 == 0:
+                gc.collect()
+
+    # Migrate heavy lists between minor-lists.txt and major-lists.txt
+    if urls_to_migrate:
+        try:
+            current_minor_lines = input_path.read_text(encoding="utf-8").splitlines()
+            new_minor_lines = [line for line in current_minor_lines if line.strip() not in urls_to_migrate]
+            input_path.write_text("\n".join(new_minor_lines) + "\n", encoding="utf-8")
+            logging.info(f"Removed {len(urls_to_migrate)} heavy lists from {INPUT_FILE}.")
+
+            major_path = Path(MAJOR_INPUT_FILE)
+            existing_major = set()
+            if major_path.exists():
+                existing_major = {line.strip() for line in major_path.read_text(encoding="utf-8").splitlines() if line.strip()}
+            
+            added_to_major = 0
+            with open(major_path, "a", encoding="utf-8") as f_major:
+                for u in urls_to_migrate:
+                    if u not in existing_major:
+                        f_major.write(u + "\n")
+                        added_to_major += 1
+            logging.info(f"Appended {added_to_major} unique lists to {MAJOR_INPUT_FILE}.")
+        except Exception as e:
+            logging.error(f"Failed to migrate heavy lists to {MAJOR_INPUT_FILE}: {e}")
 
     if not unique_domains:
         logging.error("No valid domains collected. Aborting to protect existing blocklist integrity.")
