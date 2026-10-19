@@ -193,7 +193,6 @@ https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Malwar
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Marketing
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Remote
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Scam
-https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Tracking
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Tunnels
 https://raw.githubusercontent.com/Spam404/lists/master/main-blacklist.txt
 https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts
@@ -264,7 +263,6 @@ https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribabl
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/DNS-BH-Malware-Domains.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Disconnect-Malware-Filter.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Dshield-Suspicious-High.txt
-https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Dshield-Suspicious-Low.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Dshield-Suspicious-Medium.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/EasyList-Czech-Slovak.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/EasyList-Dutch.txt
@@ -376,7 +374,6 @@ https://raw.githubusercontent.com/pirat28/IHateTracker/master/iHateTracker.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardApps.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardMobileAds.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardMobileSpyware.txt
-https://raw.githubusercontent.com/smed79/blacklist/master/hosts.txt
 https://raw.githubusercontent.com/some-username-here1/motd-adblock/master/motd-adblock
 https://raw.githubusercontent.com/sophoslabs/covid-iocs/master/malicious_domains.txt
 https://raw.githubusercontent.com/sophoslabs/covid-iocs/master/malware_domains.txt
