@@ -84,10 +84,8 @@ https://blocklistproject.github.io/Lists/smart-tv.txt
 https://blocklistproject.github.io/Lists/tiktok.txt
 https://blocklistproject.github.io/Lists/whatsapp.txt
 https://blokada.org/blocklists/ddgtrackerradar/standard/hosts.txt
-https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_ads.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_advanced_tracking.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_analytics.txt
-https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_core.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_personalization.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_security.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_third_parties.txt
