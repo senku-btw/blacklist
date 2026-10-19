@@ -26,7 +26,6 @@ https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/craiu/mobiletrackers.fork
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/crazy-max/spy.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/disconnectme/simple-ad.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/firebog/Admiral.fork.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/firebog/Easylist.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/firebog/Prigent-Ads.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/r-a-y/AdguardMobileAds.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/sefinek.hosts.txt
@@ -36,12 +35,10 @@ https://blocklist.sefinek.net/generated/v1/0.0.0.0/apps/whatsapp.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/crypto/cryptojacking/Snota418/Crypto-streams.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/crypto/cryptojacking/firebog/Prigent/Crypto.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/crypto/cryptojacking/hoshsadiq/adblock-nocoin-list.fork.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/extensions/MajkiIT/easy-privacy-host.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/extensions/r-a-y/AdguardApps.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/extensions/r-a-y/AdguardMobileSpyware.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/AssoEchap/stalkerware-indicators.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/DandelionSprout-AntiMalwareHosts.fork.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/ShadowWhisperer/malware.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/Spam404/main-blacklist.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/bigdargon/hostsVN.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/disconnectme/simple-malvertising.fork.txt
@@ -51,7 +48,6 @@ https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/quidsup/notrack-mal
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/reported-by-norton.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/sefinek.hosts.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/web-attacks.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/other/StevenBlack/hosts.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/other/polish-blocklists/MajkiIT/hostfile.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/other/polish-blocklists/PolishFiltersTeam/KADhosts.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/phishing/Dogino/Discord-Phishing-URLs-phishing.fork.txt
@@ -66,16 +62,13 @@ https://blocklist.sefinek.net/generated/v1/0.0.0.0/social/instagram.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/social/snapchat.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/social/tiktok.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/social/x.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/spam/stopforumspam/toxic-domains-whole.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/suspicious/firebog/w3kbl.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/suspicious/sefinek.hosts.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/test.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/tracking-and-telemetry/0Zinc/easyprivacy.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/tracking-and-telemetry/MajkiIT/adguard-mobile-host.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/tracking-and-telemetry/frogeye/firstparty-trackers-hosts.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/tracking-and-telemetry/quidsup/trackers-hosts.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/tracking-and-telemetry/sefinek.hosts.txt
-https://blocklist.sefinek.net/generated/v1/0.0.0.0/useless-websites/jarelllama/parked-domains.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/useless-websites/sefinek.hosts.txt
 https://blocklistproject.github.io/Lists/crypto.txt
 https://blocklistproject.github.io/Lists/ransomware.txt
@@ -87,7 +80,6 @@ https://blokada.org/blocklists/ddgtrackerradar/standard/hosts.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_advanced_tracking.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_analytics.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_personalization.txt
-https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_security.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_third_parties.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/doh.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/dyndns.txt
@@ -105,7 +97,6 @@ https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.tiktok.t
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.vivo.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.winoffice.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.xiaomi.txt
-https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/popupads.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/social.txt
 https://dehakkelaar.nl/lists/cryptojacking_campaign.list.txt
 https://easylist-downloads.adblockplus.org/adblock_premium.txt
@@ -128,7 +119,6 @@ https://hostfiles.frogeye.fr/multiparty-only-trackers-hosts.txt
 https://hostfiles.frogeye.fr/multiparty-only-trackers.txt
 https://hostfiles.frogeye.fr/multiparty-trackers-hosts.txt
 https://hostsfile.org/Downloads/hosts.txt
-https://joewein.net/dl/bl/dom-bl-base.txt
 https://joewein.net/dl/bl/dom-bl.txt
 https://list.kwbt.de/kwbtlist.txt
 https://malware-filter.gitlab.io/malware-filter/phishing-filter-domains.txt
@@ -165,7 +155,6 @@ https://raw.githubusercontent.com/FiltersHeroes/KADhosts/master/KADomains.txt
 https://raw.githubusercontent.com/Goooler/1024_hosts/master/hosts
 https://raw.githubusercontent.com/Hakame-kun/uBlock-Filters-Indonesia/master/Windows%20Host/hosts
 https://raw.githubusercontent.com/Kees1958/W3C_annual_most_used_survey_blocklist/6b8c2411f22dda68b0b41757aeda10e50717a802/TOP_EU_US_Ads_Trackers_HOST
-https://raw.githubusercontent.com/Knuschberkeks/Knuschberblock/main/Knuschberblock.txt
 https://raw.githubusercontent.com/L33Tech/uLists/master/Forks/StopModReposts.uBl
 https://raw.githubusercontent.com/Laicure/HostsY_hosts/master/shithosts
 https://raw.githubusercontent.com/Lerist/Go-Hosts/master/hosts
@@ -183,11 +172,9 @@ https://raw.githubusercontent.com/PoorPocketsMcNewHold/steamscamsites/master/ste
 https://raw.githubusercontent.com/ReddestDream/reddestdream.github.io/master/Projects/MinimalHosts/etc/MinimalHostsBlocker/minimalhosts
 https://raw.githubusercontent.com/ReddestDream/reddestdream.github.io/master/Projects/MinimalHostsCB/etc/MinimalHostsBlocker/minimalhosts
 https://raw.githubusercontent.com/Rhys-H/hosts-list/master/HostsList.txt
-https://raw.githubusercontent.com/RooneyMcNibNug/pihole-stuff/master/SNAFU.txt
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Ads
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Chat
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Cryptocurrency
-https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Malware
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Marketing
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Remote
 https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Scam
@@ -201,7 +188,6 @@ https://raw.githubusercontent.com/Th3M3/blocklists/master/tracking%26ads.list
 https://raw.githubusercontent.com/VeleSila/yhosts/master/hosts
 https://raw.githubusercontent.com/WhyIsEvery4thYearAlwaysBad/anti-cancer-filter-lists/master/anti_scam_internet.txt
 https://raw.githubusercontent.com/XionKzn/PiHole-Lists/master/PiHole/Archive/Cerber_Ransomware.txt
-https://raw.githubusercontent.com/XionKzn/PiHole-Lists/master/PiHole/Archive/Quad9.txt
 https://raw.githubusercontent.com/XionKzn/PiHole-Lists/master/PiHole/Archive/Yahoo_Ad_Servers.txt
 https://raw.githubusercontent.com/abc45628/hosts/master/hosts
 https://raw.githubusercontent.com/actx4gh/recruiter-spam-domains/trunk/hosts.txt
@@ -209,7 +195,6 @@ https://raw.githubusercontent.com/allendema/noplaylist/main/NoPlayList.txt
 https://raw.githubusercontent.com/anarki999/Adblock-List-Archive/master/Better.fyiTrackersBlocklist.txt
 https://raw.githubusercontent.com/angelics/pfbng/master/ads/ads-domain-list.txt
 https://raw.githubusercontent.com/anudeepND/blacklist/master/CoinMiner.txt
-https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt
 https://raw.githubusercontent.com/anudeepND/blacklist/master/facebook.txt
 https://raw.githubusercontent.com/arcetera/Minimal-Hosts-Blocker/master/etc/MinimalHostsBlocker/minimalhosts
 https://raw.githubusercontent.com/austinheap/sophos-xg-block-lists/master/add-2o7net.txt
@@ -261,7 +246,6 @@ https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribabl
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/DNS-BH-Malware-Domains.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Disconnect-Malware-Filter.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Dshield-Suspicious-High.txt
-https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Dshield-Suspicious-Medium.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/EasyList-Czech-Slovak.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/EasyList-Dutch.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/EasyList-Italy.txt
@@ -288,7 +272,6 @@ https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribabl
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Piwik-Spam.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/PopupBlocker.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Prebake-Obtrusive.txt
-https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Prigent-Phishing.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Quidsup-Malicious.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/ROad-Block.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/RU-AdList.txt
@@ -300,7 +283,6 @@ https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribabl
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Schacks-Adblock-Plus-Liste.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Shalla-Malicious.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Steven-Blacks-Trackers.txt
-https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Steven-Blacks-Unified-Hosts.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/TakoYachty-Gift-Card-Killer.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/TeslaCrypt-Ransomware-C2-Domain-Blocklist.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/TeslaCrypt-Ransomware-Payment-Sites-Domain-Blocklist.txt
@@ -385,7 +367,6 @@ https://raw.githubusercontent.com/stamparm/blackbook/master/blackbook.txt
 https://raw.githubusercontent.com/stonecrusher/filterlists-pihole/master/watchlist-internet-ph.txt
 https://raw.githubusercontent.com/superliaoyong/hosts/master/hosts
 https://raw.githubusercontent.com/svetlyobg/svet-custom-domains/master/ads-domains
-https://raw.githubusercontent.com/tg12/pihole-phishtank-list/master/list/phish_domains.txt
 https://raw.githubusercontent.com/the-advoid/ad-void/main/AdVoid.DNS.txt
 https://raw.githubusercontent.com/tiuxo/hosts/master/ads
 https://raw.githubusercontent.com/touhidurrr/malicious-hosts-bd/main/domains.txt
@@ -405,20 +386,15 @@ https://sysctl.org/cameleon/hosts
 https://threatfox.abuse.ch/downloads/hostfile/
 https://urlhaus.abuse.ch/downloads/hostfile/
 https://v.firebog.net/hosts/Admiral.txt
-https://v.firebog.net/hosts/Easylist.txt
-https://v.firebog.net/hosts/Easyprivacy.txt
 https://v.firebog.net/hosts/Kowabit.txt
 https://v.firebog.net/hosts/Prigent-Ads.txt
 https://v.firebog.net/hosts/Prigent-Crypto.txt
 https://v.firebog.net/hosts/neohostsbasic.txt
 https://v.firebog.net/hosts/static/w3kbl.txt
-https://warui.intaa.net/adhosts/hosts.txt
 https://web.archive.org/web/20160221140034if_/http://adblock.gjtech.net/?format=unix-hosts
 https://winhelp2002.mvps.org/hosts.txt
 https://wp.owenthe.dev/redshell.txt
 https://www.bentasker.co.uk/adblock/blockeddomains.txt
 https://www.botvrij.eu/data/ioclist.hostname.raw
 https://www.hostsfile.org/Downloads/hosts.txt
-https://www.joewein.net/dl/bl/dom-bl-base.txt
-https://www.stopforumspam.com/downloads/toxic_domains_whole.txt
 https://www.thedumbterminal.co.uk/files/services/squidblockedsites/blocked.txt
