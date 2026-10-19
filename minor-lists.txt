@@ -215,7 +215,6 @@ https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts
 https://raw.githubusercontent.com/biroloter/Mobile-Ad-Hosts/master/hosts
 https://raw.githubusercontent.com/bjornstar/hosts/master/hosts
 https://raw.githubusercontent.com/blocklistproject/Lists/master/crypto.txt
-https://raw.githubusercontent.com/blocklistproject/Lists/master/malware.txt
 https://raw.githubusercontent.com/blocktastic/pihole/master/blocktastic.txt
 https://raw.githubusercontent.com/cchevy/macedonian-pi-hole-blocklist/master/hosts.txt
 https://raw.githubusercontent.com/chrisjudk/hosts/master/hosts
@@ -267,7 +266,6 @@ https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribabl
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Metaphoricgiraffe-Privacy-Filters.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Michael-Trimms-Hosts.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Mitchell-Krogs-Badd-Boyz-Hosts.txt
-https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Notracking-hostnames.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/PLgeneral.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Piwik-Spam.txt
 https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/PopupBlocker.txt
@@ -300,7 +298,6 @@ https://raw.githubusercontent.com/deep-bhatt/huawei-block-list/master/huawei-blo
 https://raw.githubusercontent.com/desbma/referer-spam-domains-blacklist/master/spammers.txt
 https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-domains.txt
 https://raw.githubusercontent.com/durablenapkin/scamblocklist/master/hosts.txt
-https://raw.githubusercontent.com/elliotwutingfeng/ChongLuaDao-Phishing-Blocklist/main/urls-pihole.txt
 https://raw.githubusercontent.com/elliotwutingfeng/Inversion-DNSBL-Blocklists/refs/heads/main/Google_hostnames_light.txt
 https://raw.githubusercontent.com/ftpmorph/ftpihole/master/blocklists/smartphone-ads-tracking.txt
 https://raw.githubusercontent.com/ftpmorph/ftpihole/master/blocklists/xiaomi-ads-tracking.txt
@@ -342,14 +339,12 @@ https://raw.githubusercontent.com/migueldemoura/ublock-umatrix-rulesets/master/H
 https://raw.githubusercontent.com/migueldemoura/ublock-umatrix-rulesets/master/Hosts/ads-tracking-breaking
 https://raw.githubusercontent.com/mitchellkrogza/Badd-Boyz-Hosts/master/hosts
 https://raw.githubusercontent.com/mitchellkrogza/The-Big-List-of-Hacked-Malware-Web-Sites/master/hacked-domains.list
-https://raw.githubusercontent.com/mtxadmin/ublock/master/hosts.txt
 https://raw.githubusercontent.com/multiverse2011/adawaylist-jp/master/hosts
 https://raw.githubusercontent.com/nathanaccidentally/SystemHostsBlocker/master/hosts
 https://raw.githubusercontent.com/neoFelhz/neohosts/gh-pages/basic/hosts
 https://raw.githubusercontent.com/omerdduran/turk-adfilter/main/hosts.txt
 https://raw.githubusercontent.com/parseword/nolovia/master/skel/hosts-government-malware.txt
 https://raw.githubusercontent.com/parseword/nolovia/master/skel/hosts-nolovia.txt
-https://raw.githubusercontent.com/ph00lt0/blocklists/master/pihole-blocklist.txt
 https://raw.githubusercontent.com/pirat28/IHateTracker/master/iHateTracker.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardApps.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardMobileAds.txt
@@ -364,7 +359,6 @@ https://raw.githubusercontent.com/soteria-nou/domain-list/master/enrichments.txt
 https://raw.githubusercontent.com/soteria-nou/domain-list/master/fake.txt
 https://raw.githubusercontent.com/soteria-nou/domain-list/master/widgets.txt
 https://raw.githubusercontent.com/stamparm/blackbook/master/blackbook.txt
-https://raw.githubusercontent.com/stonecrusher/filterlists-pihole/master/watchlist-internet-ph.txt
 https://raw.githubusercontent.com/superliaoyong/hosts/master/hosts
 https://raw.githubusercontent.com/svetlyobg/svet-custom-domains/master/ads-domains
 https://raw.githubusercontent.com/the-advoid/ad-void/main/AdVoid.DNS.txt

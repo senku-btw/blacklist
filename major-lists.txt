@@ -25,6 +25,7 @@ https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribabl
 https://raw.githubusercontent.com/smed79/blacklist/master/hosts.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_ads.txt
 https://cdn.jsdelivr.net/gh/ProtoConsent/data@main/lists/domains/protoconsent_core.txt
+<<<<<<< HEAD
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/firebog/Easylist.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/extensions/MajkiIT/easy-privacy-host.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/ShadowWhisperer/malware.fork.txt
@@ -49,3 +50,11 @@ https://v.firebog.net/hosts/Easyprivacy.txt
 https://www.joewein.net/dl/bl/dom-bl-base.txt
 https://warui.intaa.net/adhosts/hosts.txt
 https://www.stopforumspam.com/downloads/toxic_domains_whole.txt
+=======
+https://raw.githubusercontent.com/stonecrusher/filterlists-pihole/master/watchlist-internet-ph.txt
+https://raw.githubusercontent.com/ph00lt0/blocklists/master/pihole-blocklist.txt
+https://raw.githubusercontent.com/mtxadmin/ublock/master/hosts.txt
+https://raw.githubusercontent.com/elliotwutingfeng/ChongLuaDao-Phishing-Blocklist/main/urls-pihole.txt
+https://raw.githubusercontent.com/deathbybandaid/piholeparser/master/Subscribable-Lists/ParsedBlacklists/Notracking-hostnames.txt
+https://raw.githubusercontent.com/blocklistproject/Lists/master/malware.txt
+>>>>>>> 553b5aaee0ccf30379fd26a1191705887fbc8162
