@@ -257,25 +257,34 @@ def main():
     unique_domains = set()
     urls_to_migrate = []
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_url = {executor.submit(fetch_and_parse_url, url): url for url in urls}
-        
-        completed_count = 0
-        for future in as_completed(future_to_url):
-            completed_count += 1
-            url, domains, count = future.result()
+    try:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_url = {executor.submit(fetch_and_parse_url, url): url for url in urls}
             
-            if not dry_run:
-                unique_domains.update(domains)
+            completed_count = 0
+            try:
+                for future in as_completed(future_to_url):
+                    completed_count += 1
+                    url, domains, count = future.result()
+                    
+                    if not dry_run:
+                        unique_domains.update(domains)
 
-            logging.info(f"Processing [{completed_count}/{total_urls}]: {url} | {count}")
+                    logging.info(f"Processing [{completed_count}/{total_urls}]: {url} | {count}")
 
-            if count > DOMAIN_THRESHOLD:
-                logging.info(f"List exceeded threshold ({count} > {DOMAIN_THRESHOLD}). Marking for migration to {MAJOR_INPUT_FILE}.")
-                urls_to_migrate.append(url)
-            
-            if completed_count % 20 == 0:
-                gc.collect()
+                    if count > DOMAIN_THRESHOLD:
+                        logging.info(f"List exceeded threshold ({count} > {DOMAIN_THRESHOLD}). Marking for migration to {MAJOR_INPUT_FILE}.")
+                        urls_to_migrate.append(url)
+                    
+                    if completed_count % 20 == 0:
+                        gc.collect()
+            except KeyboardInterrupt:
+                logging.warning("\nKeyboard interrupt received during processing. Shutting down worker threads...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+    except KeyboardInterrupt:
+        logging.error("Operation cancelled by user.")
+        sys.exit(130)
 
     # Migrate heavy lists between minor-lists.txt and major-lists.txt
     if urls_to_migrate:
@@ -329,7 +338,11 @@ def main():
                 pass
         sys.exit(1)
 
-    git_commit_and_push()
+    try:
+        git_commit_and_push()
+    except KeyboardInterrupt:
+        logging.error("Git operation cancelled by user.")
+        sys.exit(130)
 
 if __name__ == "__main__":
     main()
