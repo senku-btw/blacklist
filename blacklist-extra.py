@@ -25,7 +25,7 @@ RETRY_BACKOFF = 2  # seconds
 USER_AGENT = "Mozilla/5.0 (Compatible; PiholeResilientAggregator/4.0)"
 MAX_CONTENT_SIZE = 50 * 1024 * 1024  # 50MB safety cap per list
 MAX_WORKERS = 3  # Reduced concurrent threads to prevent OOM kills
-DOMAIN_THRESHOLD = 40000  # Threshold to move a list to major-lists.txt
+DOMAIN_THRESHOLD = 15000  # Threshold to move a list to major-lists.txt
 
 # URLs explicitly excluded from any operation or inclusion
 EXCLUSION_URLS = {
