@@ -1,4 +1,3 @@
-&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/ads/firebog/Easylist.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/extensions/MajkiIT/easy-privacy-host.fork.txt
 https://blocklist.sefinek.net/generated/v1/0.0.0.0/malicious/ShadowWhisperer/malware.fork.txt
