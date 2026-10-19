@@ -378,8 +378,8 @@ class PiholeManager:
             logger.error(f"Database deletion failed in Step D: {e}")
 
     def run_step_e(self) -> None:
-        """Step E: Fetch links from minor-lists.txt (strictly enforcing exclusions) and remove matching adlists from the database."""
-        logger.info("Starting Step E: Processing minor-lists.txt database cleanup...")
+        """Step E: Process minor-lists.txt against database. Adlists with comments in the DB must NOT be deleted from DB, but removed from minor-lists.txt instead."""
+        logger.info("Starting Step E: Processing minor-lists.txt database cleanup and validation...")
         
         normalized_exclusions = {self.normalize_url(url) for url in self.config.exclusion_urls}
         minor_lists_file_path = self.config.script_dir / "minor-lists.txt"
@@ -387,13 +387,10 @@ class PiholeManager:
             logger.info(f"{minor_lists_file_path} does not exist. Skipping cleanup.")
             return
 
-        file_urls: Set[str] = set()
+        file_urls: List[str] = []
         try:
             with open(minor_lists_file_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    url = line.strip()
-                    if url and not url.startswith("#"):
-                        file_urls.add(url)
+                file_urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
         except Exception as e:
             logger.error(f"Error reading {minor_lists_file_path}: {e}")
             return
@@ -402,31 +399,46 @@ class PiholeManager:
             logger.info("No URLs found in minor-lists.txt.")
             return
 
-        cleaned_file_urls = [url for url in sorted(file_urls) if self.normalize_url(url) not in normalized_exclusions]
-        if len(cleaned_file_urls) != len(file_urls):
-            try:
-                self._atomic_write(minor_lists_file_path, cleaned_file_urls)
-                logger.info("Purged exclusion URLs from minor-lists.txt.")
-            except Exception as e:
-                logger.error(f"Failed to update minor-lists.txt during exclusion cleanup: {e}")
+        updated_minor_urls: List[str] = []
+        deleted_db_count = 0
+        removed_from_minor_count = 0
 
         try:
             with self._get_db_connection() as conn:
                 cursor = conn.cursor()
-                deleted_count = 0
-                for url in cleaned_file_urls:
+                for url in file_urls:
                     norm_url = self.normalize_url(url)
                     if norm_url in normalized_exclusions:
                         logger.warning(f"Skipping exclusion URL in Step E cleanup: {url}")
                         continue
-                    cursor.execute("DELETE FROM adlist WHERE address = ?", (url,))
-                    if cursor.rowcount > 0:
-                        logger.info(f"Removed adlist matching minor-lists.txt from database: {url}")
-                        deleted_count += cursor.rowcount
+                    
+                    cursor.execute("SELECT comment FROM adlist WHERE address = ?", (url,))
+                    row = cursor.fetchone()
+                    
+                    if row is not None:
+                        comment = row[0]
+                        if comment is not None and comment.strip() != "":
+                            # Adlist has a comment: protect it from database deletion and remove it from minor-lists instead
+                            removed_from_minor_count += 1
+                            logger.info(f"Adlist has a comment and must not be deleted from DB; removing from minor-lists.txt: {url}")
+                            continue
+                        else:
+                            # No comment / empty comment: Safe to delete from DB
+                            cursor.execute("DELETE FROM adlist WHERE address = ?", (url,))
+                            if cursor.rowcount > 0:
+                                deleted_db_count += 1
+                                logger.info(f"Removed adlist matching minor-lists.txt from database: {url}")
+                    
+                    updated_minor_urls.append(url)
+                
                 conn.commit()
-                logger.info(f"Successfully deleted {deleted_count} matching adlists from gravity.db based on minor-lists.txt.")
+
+            final_minor_urls = [u for u in updated_minor_urls if self.normalize_url(u) not in normalized_exclusions]
+            self._atomic_write(minor_lists_file_path, sorted(list(set(final_minor_urls))))
+            logger.info(f"Step E completed: Deleted {deleted_db_count} adlists from gravity.db, and removed {removed_from_minor_count} commented adlists from minor-lists.txt.")
+
         except Exception as e:
-            logger.error(f"Database deletion failed in Step E: {e}")
+            logger.error(f"Database operation failed in Step E: {e}")
 
     def run_step_f(self) -> None:
         """Step F: Stage changes, commit with a randomized hexadecimal message, and push to remote repository."""
