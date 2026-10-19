@@ -4,7 +4,6 @@ https://abpvn.com/android/abpvn.txt
 https://adaway.org/hosts.txt
 https://adguardteam.github.io/HostlistsRegistry/assets/filter_50.txt
 https://adguardteam.github.io/HostlistsRegistry/assets/filter_7.txt
-https://anti-ad.net/domains.txt
 https://asc.hk/adplus.txt
 https://azorult-tracker.net/api/list/domain?format=plain
 https://badblock.celenity.dev/wildcards-no-star/badblock.txt
@@ -129,7 +128,6 @@ https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-blocklist.txt
 https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-malware.txt
 https://hagezi-mirror.dnsbunker.org/adblock/blocklist-referral-native.txt
 https://hagezi-mirror.dnsbunker.org/domains/blocklist-referral.txt
-https://hblock.molinero.dev/hosts_domains.txt
 https://hostfiles.frogeye.fr/firstparty-only-trackers-hosts.txt
 https://hostfiles.frogeye.fr/firstparty-trackers-hosts.txt
 https://hostfiles.frogeye.fr/firstparty-trackers.txt
@@ -436,7 +434,6 @@ https://s3.amazonaws.com/lists.disconnect.me/simple_malvertising.txt
 https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt
 https://sebsauvage.net/hosts/hosts
 https://sebsauvage.net/hosts/raw
-https://small.oisd.nl
 https://someonewhocares.org/hosts/zero/hosts
 https://sysctl.org/cameleon/hosts
 https://threatfox.abuse.ch/downloads/hostfile/
