@@ -160,6 +160,7 @@ https://raw.githubusercontent.com/phishdestroy/destroylist/main/list.txt
 https://raw.githubusercontent.com/phishdestroy/destroylist/main/rootlist/formats/primary/hosts.txt
 https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt
 https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt
+https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/whitelist.txt
 https://raw.githubusercontent.com/smed79/blacklist/master/hosts.txt
 https://raw.githubusercontent.com/stamparm/blackbook/master/blackbook.txt
 https://raw.githubusercontent.com/stonecrusher/filterlists-pihole/master/watchlist-internet-ph.txt
