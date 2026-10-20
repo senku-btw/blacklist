@@ -5,6 +5,7 @@ import sqlite3
 import logging
 import argparse
 import tempfile
+import subprocess
 import urllib.request
 import urllib.error
 from typing import Set, FrozenSet, Tuple, Iterable
@@ -32,8 +33,8 @@ class BlacklistSyncError(Exception):
 
 def sanitize_domain(domain: str) -> str:
     """
-    Multi-step sanitization to ensure domain compatibility with Pi-hole.
-    Strips protocols, trailing slashes, whitespace, and validates syntax.
+    Multi-step sanitization to ensure domain compatibility with Pi-hole[cite: 1].
+    Strips protocols, trailing slashes, whitespace, and validates syntax[cite: 1].
     """
     if not domain or not isinstance(domain, str):
         return ""
@@ -52,7 +53,7 @@ def sanitize_domain(domain: str) -> str:
 
 def sanitize_domain_batch(domains: Iterable[str]) -> FrozenSet[str]:
     """
-    Processes a batch of domains into an immutable, unique-by-type frozenset object.
+    Processes a batch of domains into an immutable, unique-by-type frozenset object[cite: 1].
     """
     valid_domains: Set[str] = set()
     for d in domains:
@@ -63,10 +64,10 @@ def sanitize_domain_batch(domains: Iterable[str]) -> FrozenSet[str]:
 
 def sanitize_regex_rule(rule: str) -> str:
     """
-    Multi-step sanitization and validation for regex blacklist rules:
-    1. Checks type and non-emptiness.
-    2. Strips leading/trailing whitespace and invisible/control characters.
-    3. Validates compilation via Python's re engine for PCRE/Pi-hole compatibility.
+    Multi-step sanitization and validation for regex blacklist rules[cite: 1]:
+    1. Checks type and non-emptiness[cite: 1].
+    2. Strips leading/trailing whitespace and invisible/control characters[cite: 1].
+    3. Validates compilation via Python's re engine for PCRE/Pi-hole compatibility[cite: 1].
     """
     if not rule or not isinstance(rule, str):
         return ""
@@ -87,7 +88,7 @@ def sanitize_regex_rule(rule: str) -> str:
 
 def sanitize_regex_batch(regexes: Iterable[str]) -> FrozenSet[str]:
     """
-    Processes a batch of regex rules into an immutable, unique frozenset object.
+    Processes a batch of regex rules into an immutable, unique frozenset object[cite: 1].
     """
     valid_regexes: Set[str] = set()
     for r in regexes:
@@ -119,10 +120,10 @@ def sanitize_url_batch(urls: Iterable[str]) -> FrozenSet[str]:
 
 def fetch_pihole_default_domains(db_path: str) -> Set[str]:
     """
-    Queries Pi-hole's gravity.db securely using parameterized checks and explicit transaction safety.
+    Queries Pi-hole's gravity.db securely using parameterized checks and explicit transaction safety[cite: 1].
     """
     if not os.path.exists(db_path):
-        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping database extraction.")
+        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping database extraction[cite: 1].")
         return set()
 
     extracted_domains: Set[str] = set()
@@ -155,10 +156,10 @@ def fetch_pihole_default_domains(db_path: str) -> Set[str]:
 def fetch_pihole_regex_blacklist(db_path: str) -> Set[str]:
     """
     Queries Pi-hole's gravity.db for blacklist regex rules belonging exclusively
-    to the Default group and having a non-empty comment.
+    to the Default group and having a non-empty comment[cite: 1].
     """
     if not os.path.exists(db_path):
-        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping regex blacklist extraction.")
+        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping regex blacklist extraction[cite: 1].")
         return set()
 
     extracted_regexes: Set[str] = set()
@@ -331,7 +332,7 @@ def verify_url_is_empty(url: str) -> bool:
 
 def purge_pihole_domains(domains: FrozenSet[str], db_path: str) -> None:
     """
-    Atomically purges extracted domains from Pi-hole's gravity.db within a transaction boundary.
+    Atomically purges extracted domains from Pi-hole's gravity.db within a transaction boundary[cite: 1].
     """
     if not domains or not os.path.exists(db_path):
         return
@@ -359,7 +360,7 @@ def purge_pihole_domains(domains: FrozenSet[str], db_path: str) -> None:
                     total_purged += len(domain_ids)
 
             conn.commit()
-            logger.info(f"Successfully purged {total_purged} domains from Pi-hole gravity database.")
+            logger.info(f"Successfully purged {total_purged} domains from Pi-hole gravity database[cite: 1].")
             
     except sqlite3.Error as e:
         logger.error(f"Transaction failed during database purge, rolling back: {e}")
@@ -367,10 +368,10 @@ def purge_pihole_domains(domains: FrozenSet[str], db_path: str) -> None:
 
 def parse_local_blacklist(file_path: str) -> Set[str]:
     """
-    Safely parses local blacklist file line by line, handling missing directories gracefully.
+    Safely parses local blacklist file line by line, handling missing directories gracefully[cite: 1].
     """
     if not os.path.exists(file_path):
-        logger.info(f"Local blacklist file not found at '{file_path}'. Initializing empty file.")
+        logger.info(f"Local blacklist file not found at '{file_path}'. Initializing empty file[cite: 1].")
         dir_name = os.path.dirname(file_path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
@@ -392,7 +393,7 @@ def parse_local_blacklist(file_path: str) -> Set[str]:
 
 def atomic_write_blacklist(file_path: str, domains_tuple: Tuple[str, ...]) -> None:
     """
-    Performs an atomic write operation via temporary file replacement to prevent data corruption.
+    Performs an atomic write operation via temporary file replacement to prevent data corruption[cite: 1].
     """
     dir_name = os.path.dirname(file_path)
     if dir_name:
@@ -404,7 +405,7 @@ def atomic_write_blacklist(file_path: str, domains_tuple: Tuple[str, ...]) -> No
             for domain in domains_tuple:
                 f.write(f"{domain}\n")
         os.replace(temp_path, file_path)
-        logger.info(f"Successfully updated '{file_path}' atomically with {len(domains_tuple)} domains.")
+        logger.info(f"Successfully updated '{file_path}' atomically with {len(domains_tuple)} domains[cite: 1].")
     except Exception as e:
         if os.path.exists(temp_path):
             try:
@@ -416,8 +417,8 @@ def atomic_write_blacklist(file_path: str, domains_tuple: Tuple[str, ...]) -> No
 
 def atomic_write_regex_deny(file_path: str, regex_tuple: Tuple[str, ...]) -> None:
     """
-    Performs an atomic write operation via temporary file replacement for regex_deny.txt.
-    Ensures no empty lines.
+    Performs an atomic write operation via temporary file replacement for regex_deny.txt[cite: 1].
+    Ensures no empty lines[cite: 1].
     """
     dir_name = os.path.dirname(file_path)
     if dir_name:
@@ -430,7 +431,7 @@ def atomic_write_regex_deny(file_path: str, regex_tuple: Tuple[str, ...]) -> Non
             if content:
                 f.write(content)
         os.replace(temp_path, file_path)
-        logger.info(f"Successfully updated '{file_path}' atomically with {len(regex_tuple)} regex rules.")
+        logger.info(f"Successfully updated '{file_path}' atomically with {len(regex_tuple)} regex rules[cite: 1].")
     except Exception as e:
         if os.path.exists(temp_path):
             try:
@@ -626,14 +627,55 @@ def filter_minor_lists_against_blocklists(blocklists_path: str, minor_lists_path
     else:
         logger.info("No overlapping URLs found between blocklists.txt and minor-lists.txt.")
 
+def git_commit_and_push_changes(repo_dir: str) -> None:
+    """
+    Checks for local changes in the repository. If changes exist, stages them,
+    commits them using a randomized hexadecimal string message, and pushes to GitHub.
+    """
+    if not os.path.exists(os.path.join(repo_dir, ".git")):
+        logger.warning(f"No git repository found at '{repo_dir}'. Skipping git push.")
+        return
+
+    try:
+        # Check if there are any changes (staged or unstaged)
+        status_result = subprocess.run(
+            ["git", "-C", repo_dir, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        if not status_result.stdout.strip():
+            logger.info("No changes detected in the repository. Skipping git push.")
+            return
+
+        logger.info("Changes detected. Staging changes...")
+        subprocess.run(["git", "-C", repo_dir, "add", "."], check=True)
+
+        # Generate a randomized hexadecimal string for the commit message (e.g., 8 bytes / 16 hex chars)
+        commit_message = os.urandom(8).hex()
+        logger.info(f"Committing changes with message: {commit_message}")
+        subprocess.run(["git", "-C", repo_dir, "commit", "-m", commit_message], check=True)
+
+        logger.info("Pushing changes to GitHub...")
+        subprocess.run(["git", "-C", repo_dir, "push"], check=True)
+        logger.info("Successfully pushed changes to GitHub.")
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Git operation failed: {e}")
+        raise BlacklistSyncError(f"Git push failed: {e}") from e
+    except Exception as e:
+        logger.error(f"Unexpected error during git commit and push: {e}")
+        raise BlacklistSyncError(f"Git automation failed: {e}") from e
+
 def parse_arguments() -> argparse.Namespace:
-    """Parses command-line arguments for optional custom blacklist path overrides."""
+    """Parses command-line arguments for optional custom blacklist path overrides[cite: 1]."""
     parser = argparse.ArgumentParser(description="Production-grade Pi-hole blacklist synchronizer.")
     parser.add_argument(
         "--blacklist-path",
         type=str,
         default=None,
-        help="Custom absolute path to blacklist.txt file."
+        help="Custom absolute path to blacklist.txt file[cite: 1]."
     )
     return parser.parse_args()
 
@@ -653,11 +695,11 @@ def main() -> None:
         # Phase 1: Domain Blacklist Sync
         pihole_raw = fetch_pihole_default_domains(DB_PATH)
         pihole_frozen: FrozenSet[str] = sanitize_domain_batch(pihole_raw)
-        logger.info(f"Sanitized {len(pihole_frozen)} valid unique domains from gravity.db.")
+        logger.info(f"Sanitized {len(pihole_frozen)} valid unique domains from gravity.db[cite: 1].")
 
         local_raw = parse_local_blacklist(blacklist_file_path)
         local_frozen: FrozenSet[str] = sanitize_domain_batch(local_raw)
-        logger.info(f"Sanitized {len(local_frozen)} valid unique domains from local file.")
+        logger.info(f"Sanitized {len(local_frozen)} valid unique domains from local file[cite: 1].")
 
         combined_tuple: Tuple[str, ...] = tuple(pihole_frozen) + tuple(local_frozen)
         alphabetised_tuple: Tuple[str, ...] = tuple(sorted(combined_tuple))
@@ -709,6 +751,10 @@ def main() -> None:
         # Phase 6: Filter Minor Blocklists Against Main Blocklists
         logger.info("Initializing Phase 6: Filtering minor-lists against blocklists...")
         filter_minor_lists_against_blocklists(blocklists_path, minor_lists_path)
+
+        # Phase 7: Git Commit and Push Automation
+        logger.info("Initializing Phase 7: Checking and pushing updates to GitHub...")
+        git_commit_and_push_changes(current_dir)
 
         logger.info("Pipeline executed successfully to completion.")
 
