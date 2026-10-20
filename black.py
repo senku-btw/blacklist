@@ -94,6 +94,27 @@ def sanitize_regex_batch(regexes: Iterable[str]) -> FrozenSet[str]:
             valid_regexes.add(sanitized)
     return frozenset(valid_regexes)
 
+def sanitize_url(url: str) -> str:
+    """
+    Sanitizes an adlist URL/address by stripping whitespace and invisible characters.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    cleaned = url.strip()
+    cleaned = "".join(ch for ch in cleaned if ord(ch) >= 32 and ch != 127)
+    return cleaned
+
+def sanitize_url_batch(urls: Iterable[str]) -> FrozenSet[str]:
+    """
+    Processes a batch of adlist URLs into an immutable, unique frozenset object.
+    """
+    valid_urls: Set[str] = set()
+    for u in urls:
+        sanitized = sanitize_url(u)
+        if sanitized:
+            valid_urls.add(sanitized)
+    return frozenset(valid_urls)
+
 def fetch_pihole_default_domains(db_path: str) -> Set[str]:
     """
     Queries Pi-hole's gravity.db securely using parameterized checks and explicit transaction safety.
@@ -166,6 +187,43 @@ def fetch_pihole_regex_blacklist(db_path: str) -> Set[str]:
         raise BlacklistSyncError(f"Database regex read failed: {e}") from e
 
     return extracted_regexes
+
+def fetch_pihole_adlists(db_path: str) -> Set[str]:
+    """
+    Queries Pi-hole's gravity.db for adlists belonging to the Default group,
+    having a non-empty comment, and a status of 1, 2, or 3.
+    """
+    if not os.path.exists(db_path):
+        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping adlist extraction.")
+        return set()
+
+    extracted_urls: Set[str] = set()
+    try:
+        with sqlite3.connect(db_path, timeout=10.0) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            
+            query = """
+                SELECT DISTINCT a.address
+                FROM adlist a
+                JOIN adlist_by_group abg ON a.id = abg.adlist_id
+                JOIN "group" g ON abg.group_id = g.id
+                WHERE g.name = 'Default'
+                  AND a.comment IS NOT NULL
+                  AND TRIM(a.comment) != ''
+                  AND a.status IN (1, 2, 3)
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            for row in rows:
+                if row and row[0]:
+                    extracted_urls.add(row[0])
+                    
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error while fetching adlists from Pi-hole database: {e}")
+        raise BlacklistSyncError(f"Database adlist read failed: {e}") from e
+
+    return extracted_urls
 
 def purge_pihole_domains(domains: FrozenSet[str], db_path: str) -> None:
     """
@@ -278,6 +336,32 @@ def atomic_write_regex_deny(file_path: str, regex_tuple: Tuple[str, ...]) -> Non
         logger.error(f"Failed to write regex_deny.txt atomically: {e}")
         raise BlacklistSyncError(f"Atomic regex file write failed: {e}") from e
 
+def atomic_write_blocklists(file_path: str, url_tuple: Tuple[str, ...]) -> None:
+    """
+    Performs an atomic write operation via temporary file replacement for blocklists.txt.
+    Ensures no empty lines.
+    """
+    dir_name = os.path.dirname(file_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+        
+    fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            content = "\n".join(url_tuple)
+            if content:
+                f.write(content)
+        os.replace(temp_path, file_path)
+        logger.info(f"Successfully updated '{file_path}' atomically with {len(url_tuple)} blocklists.")
+    except Exception as e:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        logger.error(f"Failed to write blocklists.txt atomically: {e}")
+        raise BlacklistSyncError(f"Atomic blocklists file write failed: {e}") from e
+
 def parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments for optional custom blacklist path overrides."""
     parser = argparse.ArgumentParser(description="Production-grade Pi-hole blacklist synchronizer.")
@@ -295,6 +379,7 @@ def main() -> None:
     current_dir = os.path.dirname(os.path.abspath(__file__))
     blacklist_file_path = args.blacklist_path or os.path.join(current_dir, "blacklists", "blacklist.txt")
     regex_deny_path = os.path.join(current_dir, "regex", "regex_deny.txt")
+    blocklists_path = os.path.join(os.path.dirname(current_dir), "blocklists.txt")
     
     logger.info("Initializing Pi-hole blacklist synchronization pipeline...")
 
@@ -324,6 +409,15 @@ def main() -> None:
 
         regex_sorted_tuple: Tuple[str, ...] = tuple(sorted(regex_frozen))
         atomic_write_regex_deny(regex_deny_path, regex_sorted_tuple)
+
+        # Phase 3: Blocklists Export
+        logger.info("Initializing Phase 3: Adlists extraction and validation...")
+        adlist_raw = fetch_pihole_adlists(DB_PATH)
+        adlist_frozen: FrozenSet[str] = sanitize_url_batch(adlist_raw)
+        logger.info(f"Sanitized and validated {len(adlist_frozen)} unique blocklist URLs from gravity.db.")
+
+        adlist_sorted_tuple: Tuple[str, ...] = tuple(sorted(adlist_frozen))
+        atomic_write_blocklists(blocklists_path, adlist_sorted_tuple)
 
         logger.info("Pipeline executed successfully to completion.")
 
