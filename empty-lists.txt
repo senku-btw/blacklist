@@ -17,6 +17,7 @@ https://kriskintel.com/feeds/ktip_ransomware_feeds.txt
 https://list.kwbt.de/kwbtlist.txt
 https://npc.0am.jp/hosts.php?dl=1
 https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt
+https://raw.githubusercontent.com/FiltersHeroes/KADhosts/master/KADhosts.txt
 https://raw.githubusercontent.com/elliotwutingfeng/Inversion-DNSBL-Blocklists/refs/heads/main/Google_hostnames.txt
 https://rescure.fruxlabs.com/covid.txt
 https://rescure.fruxlabs.com/rescure_domain_blacklist.txt
