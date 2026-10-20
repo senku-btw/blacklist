@@ -1,0 +1,12 @@
+http://blacklists.ntop.org/adblocker-hostnames.txt
+https://gitlab.com/dns-firewall/dns/matrix/matrix/raw/master/source/adware/domains.list
+https://hosts.nfz.moe/basic/hosts
+https://hosts.nfz.moe/full/hosts
+https://kriskintel.com/feeds/ktip_malicious_domains.txt
+https://kriskintel.com/feeds/ktip_ransomware_feeds.txt
+https://npc.0am.jp/hosts.php?dl=1
+https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt
+https://rescure.fruxlabs.com/covid.txt
+https://rescure.fruxlabs.com/rescure_domain_blacklist.txt
+https://www.malwaredomainlist.com/hostslist/hosts.txt
+https://www.threatsourcing.com/dnall.txt
