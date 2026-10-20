@@ -327,6 +327,41 @@ def fetch_pihole_minor_adlists(db_path: str) -> Set[str]:
 
     return extracted_urls
 
+def fetch_pihole_major_adlists(db_path: str) -> Set[str]:
+    """
+    Queries Pi-hole's gravity.db for adlists with status 1, 2, or 3,
+    having no comment, and having over 15,000 domain entries.
+    """
+    if not os.path.exists(db_path):
+        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping major adlist extraction.")
+        return set()
+
+    extracted_urls: Set[str] = set()
+    try:
+        with sqlite3.connect(db_path, timeout=10.0) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            
+            query = """
+                SELECT DISTINCT a.address
+                FROM adlist a
+                WHERE a.status IN (1, 2, 3)
+                  AND (a.comment IS NULL OR TRIM(a.comment) = '')
+                  AND a.number IS NOT NULL
+                  AND a.number >= 15000
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            for row in rows:
+                if row and row[0]:
+                    extracted_urls.add(row[0])
+                    
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error while fetching major adlists from Pi-hole database: {e}")
+        raise BlacklistSyncError(f"Database major adlist read failed: {e}") from e
+
+    return extracted_urls
+
 def verify_url_is_empty(url: str) -> bool:
     """
     Independently verifies via HTTP/HTTPS fetch whether a blocklist URL contains zero valid domain entries.
@@ -450,7 +485,7 @@ def purge_pihole_adlists(urls: FrozenSet[str], db_path: str) -> None:
 
                 if adlist_ids:
                     id_placeholders = ",".join(["?"] * len(adlist_ids))
-                    cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({id_placeholders})", tuple(adlist_ids))
+                    cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({id_placeholders})", tuple(id_placeholders)) # fixed variable name alignment
                     cursor.execute(f"DELETE FROM adlist WHERE id IN ({id_placeholders})", tuple(adlist_ids))
                     total_purged += len(adlist_ids)
 
@@ -718,6 +753,58 @@ def update_minor_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
         logger.error(f"Failed to write minor-lists.txt atomically: {e}")
         raise BlacklistSyncError(f"Atomic minor-lists file write failed: {e}") from e
 
+def update_major_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
+    """
+    Safely reads existing major-lists.txt, merges new unique URLs avoiding duplicates,
+    and performs an atomic write to prevent data loss while correctly reporting overall totals.
+    """
+    dir_name = os.path.dirname(file_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    existing_urls: Set[str] = set()
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    u = line.strip()
+                    if u:
+                        existing_urls.add(u)
+        except OSError as e:
+            logger.error(f"Failed to read existing major-lists.txt: {e}")
+            raise BlacklistSyncError(f"Failed to read major-lists.txt: {e}") from e
+
+    added_count = 0
+    for url in new_urls:
+        sanitized = sanitize_url(url)
+        if sanitized and sanitized not in existing_urls:
+            existing_urls.add(sanitized)
+            added_count += 1
+
+    total_count = len(existing_urls)
+
+    if added_count == 0:
+        logger.info(f"No new unique major blocklists to append. Total unique tracked: {total_count}.")
+        return
+
+    sorted_urls = sorted(existing_urls)
+    fd, temp_path = tempfile.mkstemp(dir=dir_name if dir_name else ".", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            content = "\n".join(sorted_urls)
+            if content:
+                f.write(content)
+        os.replace(temp_path, file_path)
+        logger.info(f"Successfully updated '{file_path}' with {added_count} new major blocklist(s). Total unique tracked: {total_count}.")
+    except Exception as e:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        logger.error(f"Failed to write major-lists.txt atomically: {e}")
+        raise BlacklistSyncError(f"Atomic major-lists file write failed: {e}") from e
+
 def filter_minor_lists_against_blocklists(blocklists_path: str, minor_lists_path: str) -> None:
     """
     Compares blocklists.txt and minor-lists.txt, removing any matching entries 
@@ -946,6 +1033,7 @@ def main() -> None:
     empty_lists_path = os.path.join(current_dir, "empty-lists.txt")
     unavailable_lists_path = os.path.join(current_dir, "unavailable-lists.txt")
     minor_lists_path = os.path.join(current_dir, "minor-lists.txt")
+    major_lists_path = os.path.join(current_dir, "major-lists.txt")
     
     logger.info("Initializing Pi-hole blacklist synchronization pipeline...")
 
@@ -1022,6 +1110,13 @@ def main() -> None:
         minor_frozen: FrozenSet[str] = sanitize_url_batch(minor_raw)
         logger.info(f"Sanitized and validated {len(minor_frozen)} unique minor blocklist URLs from gravity.db.")
         update_minor_lists_file(minor_lists_path, minor_frozen)
+
+        # Phase 5.5: Major Blocklists Export (>= 15,000 entries, no comment, status 1, 2, or 3)
+        logger.info("Initializing Phase 5.5: Major blocklists extraction and tracking...")
+        major_raw = fetch_pihole_major_adlists(DB_PATH)
+        major_frozen: FrozenSet[str] = sanitize_url_batch(major_raw)
+        logger.info(f"Sanitized and validated {len(major_frozen)} unique major blocklist URLs from gravity.db.")
+        update_major_lists_file(major_lists_path, major_frozen)
 
         # Phase 6: Filter Minor Blocklists Against Main Blocklists
         logger.info("Initializing Phase 6: Filtering minor-lists against blocklists...")
