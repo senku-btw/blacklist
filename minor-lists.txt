@@ -350,3 +350,4 @@ https://winhelp2002.mvps.org/hosts.txt
 https://wp.owenthe.dev/redshell.txt
 https://www.botvrij.eu/data/ioclist.hostname.raw
 https://www.thedumbterminal.co.uk/files/services/squidblockedsites/blocked.txt
+https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt
