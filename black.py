@@ -499,8 +499,8 @@ def main() -> None:
     current_dir = os.path.dirname(os.path.abspath(__file__))
     blacklist_file_path = args.blacklist_path or os.path.join(current_dir, "blacklists", "blacklist.txt")
     regex_deny_path = os.path.join(current_dir, "regex", "regex_deny.txt")
-    blocklists_path = os.path.join(os.path.dirname(current_dir), "blocklists.txt")
-    empty_lists_path = os.path.join(os.path.dirname(current_dir), "empty-lists.txt")
+    blocklists_path = os.path.join(current_dir, "blocklists.txt")
+    empty_lists_path = os.path.join(current_dir, "empty-lists.txt")
     
     logger.info("Initializing Pi-hole blacklist synchronization pipeline...")
 
