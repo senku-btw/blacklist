@@ -5,7 +5,7 @@ import sqlite3
 import logging
 import argparse
 import tempfile
-from typing import Set, FrozenSet, Tuple, Iterable, Optional
+from typing import Set, FrozenSet, Tuple, Iterable
 
 # Configure production-grade structured logging
 logging.basicConfig(
@@ -59,6 +59,41 @@ def sanitize_domain_batch(domains: Iterable[str]) -> FrozenSet[str]:
             valid_domains.add(sanitized)
     return frozenset(valid_domains)
 
+def sanitize_regex_rule(rule: str) -> str:
+    """
+    Multi-step sanitization and validation for regex blacklist rules:
+    1. Checks type and non-emptiness.
+    2. Strips leading/trailing whitespace and invisible/control characters.
+    3. Validates compilation via Python's re engine for PCRE/Pi-hole compatibility.
+    """
+    if not rule or not isinstance(rule, str):
+        return ""
+    
+    cleaned = rule.strip()
+    cleaned = "".join(ch for ch in cleaned if ord(ch) >= 32 and ch != 127)
+    
+    if not cleaned:
+        return ""
+        
+    try:
+        re.compile(cleaned)
+    except re.error as e:
+        logger.warning(f"Invalid regex rule encountered ('{rule}'): {e}")
+        return ""
+        
+    return cleaned
+
+def sanitize_regex_batch(regexes: Iterable[str]) -> FrozenSet[str]:
+    """
+    Processes a batch of regex rules into an immutable, unique frozenset object.
+    """
+    valid_regexes: Set[str] = set()
+    for r in regexes:
+        sanitized = sanitize_regex_rule(r)
+        if sanitized:
+            valid_regexes.add(sanitized)
+    return frozenset(valid_regexes)
+
 def fetch_pihole_default_domains(db_path: str) -> Set[str]:
     """
     Queries Pi-hole's gravity.db securely using parameterized checks and explicit transaction safety.
@@ -93,6 +128,44 @@ def fetch_pihole_default_domains(db_path: str) -> Set[str]:
         raise BlacklistSyncError(f"Database read failed: {e}") from e
 
     return extracted_domains
+
+def fetch_pihole_regex_blacklist(db_path: str) -> Set[str]:
+    """
+    Queries Pi-hole's gravity.db for blacklist regex rules belonging exclusively
+    to the Default group and having a non-empty comment.
+    """
+    if not os.path.exists(db_path):
+        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping regex blacklist extraction.")
+        return set()
+
+    extracted_regexes: Set[str] = set()
+    try:
+        with sqlite3.connect(db_path, timeout=10.0) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            
+            query = """
+                SELECT DISTINCT d.domain 
+                FROM domainlist d
+                JOIN domainlist_by_group dg ON d.id = dg.domainlist_id
+                JOIN "group" g ON dg.group_id = g.id
+                WHERE d.type = 3
+                  AND d.comment IS NOT NULL 
+                  AND TRIM(d.comment) != ''
+                GROUP BY d.id, d.domain
+                HAVING COUNT(dg.group_id) = 1 AND MAX(g.name) = 'Default'
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            for row in rows:
+                if row and row[0]:
+                    extracted_regexes.add(row[0])
+                    
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error while fetching regex blacklist from Pi-hole database: {e}")
+        raise BlacklistSyncError(f"Database regex read failed: {e}") from e
+
+    return extracted_regexes
 
 def purge_pihole_domains(domains: FrozenSet[str], db_path: str) -> None:
     """
@@ -179,6 +252,32 @@ def atomic_write_blacklist(file_path: str, domains_tuple: Tuple[str, ...]) -> No
         logger.error(f"Failed to write blacklist file atomically: {e}")
         raise BlacklistSyncError(f"Atomic file write failed: {e}") from e
 
+def atomic_write_regex_deny(file_path: str, regex_tuple: Tuple[str, ...]) -> None:
+    """
+    Performs an atomic write operation via temporary file replacement for regex_deny.txt.
+    Ensures no empty lines.
+    """
+    dir_name = os.path.dirname(file_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+        
+    fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            content = "\n".join(regex_tuple)
+            if content:
+                f.write(content)
+        os.replace(temp_path, file_path)
+        logger.info(f"Successfully updated '{file_path}' atomically with {len(regex_tuple)} regex rules.")
+    except Exception as e:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        logger.error(f"Failed to write regex_deny.txt atomically: {e}")
+        raise BlacklistSyncError(f"Atomic regex file write failed: {e}") from e
+
 def parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments for optional custom blacklist path overrides."""
     parser = argparse.ArgumentParser(description="Production-grade Pi-hole blacklist synchronizer.")
@@ -195,10 +294,12 @@ def main() -> None:
     
     current_dir = os.path.dirname(os.path.abspath(__file__))
     blacklist_file_path = args.blacklist_path or os.path.join(current_dir, "blacklists", "blacklist.txt")
+    regex_deny_path = os.path.join(current_dir, "regex", "regex_deny.txt")
     
     logger.info("Initializing Pi-hole blacklist synchronization pipeline...")
 
     try:
+        # Phase 1: Domain Blacklist Sync
         pihole_raw = fetch_pihole_default_domains(DB_PATH)
         pihole_frozen: FrozenSet[str] = sanitize_domain_batch(pihole_raw)
         logger.info(f"Sanitized {len(pihole_frozen)} valid unique domains from gravity.db.")
@@ -214,6 +315,15 @@ def main() -> None:
 
         if pihole_frozen:
             purge_pihole_domains(pihole_frozen, DB_PATH)
+
+        # Phase 2: Regex Blacklist Export
+        logger.info("Initializing Phase 2: Regex blacklist extraction and validation...")
+        regex_raw = fetch_pihole_regex_blacklist(DB_PATH)
+        regex_frozen: FrozenSet[str] = sanitize_regex_batch(regex_raw)
+        logger.info(f"Sanitized and validated {len(regex_frozen)} unique regex blacklist rules from gravity.db.")
+
+        regex_sorted_tuple: Tuple[str, ...] = tuple(sorted(regex_frozen))
+        atomic_write_regex_deny(regex_deny_path, regex_sorted_tuple)
 
         logger.info("Pipeline executed successfully to completion.")
 
