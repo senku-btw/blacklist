@@ -570,6 +570,62 @@ def update_minor_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
         logger.error(f"Failed to write minor-lists.txt atomically: {e}")
         raise BlacklistSyncError(f"Atomic minor-lists file write failed: {e}") from e
 
+def filter_minor_lists_against_blocklists(blocklists_path: str, minor_lists_path: str) -> None:
+    """
+    Compares blocklists.txt and minor-lists.txt, removing any matching entries 
+    found in blocklists.txt from minor-lists.txt atomically.
+    """
+    if not os.path.exists(blocklists_path) or not os.path.exists(minor_lists_path):
+        return
+
+    blocklists: Set[str] = set()
+    try:
+        with open(blocklists_path, "r", encoding="utf-8") as f:
+            for line in f:
+                u = line.strip()
+                if u:
+                    blocklists.add(u)
+    except OSError as e:
+        logger.error(f"Failed to read blocklists.txt for filtering: {e}")
+        raise BlacklistSyncError(f"Failed to read blocklists.txt: {e}") from e
+
+    minor_urls: Set[str] = set()
+    try:
+        with open(minor_lists_path, "r", encoding="utf-8") as f:
+            for line in f:
+                u = line.strip()
+                if u:
+                    minor_urls.add(u)
+    except OSError as e:
+        logger.error(f"Failed to read minor-lists.txt for filtering: {e}")
+        raise BlacklistSyncError(f"Failed to read minor-lists.txt: {e}") from e
+
+    initial_count = len(minor_urls)
+    filtered_urls = minor_urls - blocklists
+    removed_count = initial_count - len(filtered_urls)
+
+    if removed_count > 0:
+        dir_name = os.path.dirname(minor_lists_path)
+        sorted_urls = sorted(filtered_urls)
+        fd, temp_path = tempfile.mkstemp(dir=dir_name if dir_name else ".", text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                content = "\n".join(sorted_urls)
+                if content:
+                    f.write(content)
+            os.replace(temp_path, minor_lists_path)
+            logger.info(f"Successfully filtered out {removed_count} overlapping URL(s) from '{minor_lists_path}' matching blocklists.txt.")
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            logger.error(f"Failed to write filtered minor-lists.txt atomically: {e}")
+            raise BlacklistSyncError(f"Atomic filtered minor-lists file write failed: {e}") from e
+    else:
+        logger.info("No overlapping URLs found between blocklists.txt and minor-lists.txt.")
+
 def parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments for optional custom blacklist path overrides[cite: 1]."""
     parser = argparse.ArgumentParser(description="Production-grade Pi-hole blacklist synchronizer.")
@@ -649,6 +705,10 @@ def main() -> None:
         minor_frozen: FrozenSet[str] = sanitize_url_batch(minor_raw)
         logger.info(f"Sanitized and validated {len(minor_frozen)} unique minor blocklist URLs from gravity.db.")
         update_minor_lists_file(minor_lists_path, minor_frozen)
+
+        # Phase 6: Filter Minor Blocklists Against Main Blocklists
+        logger.info("Initializing Phase 6: Filtering minor-lists against blocklists...")
+        filter_minor_lists_against_blocklists(blocklists_path, minor_lists_path)
 
         logger.info("Pipeline executed successfully to completion.")
 
