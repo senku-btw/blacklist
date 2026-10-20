@@ -7,8 +7,6 @@
 1rx.io
 247realmedia.com
 24smi.net
-2912a.v.fwmrm.net
-29773.v.fwmrm.net
 2leep.com
 2mdn.net
 2o7.net
@@ -23,7 +21,6 @@
 4u.pl
 51network.com
 5231.xg4ken.com
-5be16.v.fwmrm.net
 5min.com
 600z.com
 63labs.com
@@ -35,7 +32,6 @@
 888casino.com
 888media.net
 9c9media.ca
-9cf9.v.fwmrm.net
 a-graph.facebook.com
 a.ad-sys.com
 a.adnium.com
@@ -208,7 +204,6 @@ adcel.vrvm.com
 adcentriconline.com
 adchemy.com
 adcirrus.com
-adclick.g.doubleclick.net
 adclickmedia.com
 adcloud.com
 adcloud.net
@@ -535,7 +530,6 @@ adwitserver.com
 adworx.at
 adworx.be
 adworx.nl
-adx.g.doubleclick.net
 adx1.com
 adxpansion.com
 adxpose.com
@@ -696,7 +690,6 @@ applyforsex.com
 appmetrx.com
 appnexus.com
 appsflyer.com
-appspot-preview.l.google.com
 appssavvy.com
 aprecision.net
 apture.com
@@ -796,7 +789,6 @@ bb.crwdcntrl.net
 bcp.crwdcntrl.net
 bcvp0rtal.com
 bdv.bidvertiser.com
-bea4.v.fwmrm.net
 beachfront.com
 beacon.scorecardresearch.com
 beaconads.com
@@ -964,7 +956,6 @@ c.amazon-adsystem.com
 c.betrad.com
 c.greystripe.com
 c.msn.com
-c.w.inmobi.com
 c1.nend.net
 c1.popads.net
 c1exchange.com
@@ -1166,7 +1157,6 @@ cloudfront.net
 cloudservices.roku.com
 clovenetwork.com
 clustrmaps.com
-cm.g.doubleclick.net
 cmads.com.tw
 cmadsasia.com
 cmadseu.com
@@ -1347,7 +1337,6 @@ dailyme.com
 dallianceclubs.life
 daphnecm.com
 dapper.net
-dart-apac.l.doubleclick.net
 dashboardad.net
 data.emb-api.com
 data.flurry.com
@@ -1476,7 +1465,6 @@ doublepimp.com
 doublepositive.com
 doubleverify.com
 dp-dhl.com
-dp.g.doubleclick.net
 dpbolvw.net
 dpdhl.com
 dpm.demdex.net
@@ -1593,7 +1581,6 @@ errors.hbbtv.smartclip.net
 esm1.net
 estara.com
 estat.com
-et.w.inmobi.com
 etarg.ru
 etarget.net
 etargetnet.com
@@ -1682,7 +1669,6 @@ fb.me
 fbcdn.net
 federatedmedia.net
 federatedml-pa.googleapis.com
-feedads.g.doubleclick.net
 feedback.discord.com
 feedjit.com
 feedperfect.com
@@ -1765,7 +1751,6 @@ fxj.com.au
 fyber.com
 fyre.co
 g.jwpsrv.com
-g1.v.fwmrm.net
 g2.gumgum.com
 gam.adnxs.com
 gambamax.com
@@ -1851,9 +1836,6 @@ goodreads.com
 google-analytics.com
 google-melange.com
 google.ad
-googleads.g.doubleclick.net
-googleads2.g.doubleclick.net
-googleads4.g.doubleclick.net
 googleadservices.com
 googleapis.com
 googlemail.com
@@ -1892,7 +1874,6 @@ gsicommerce.com
 gsimedia.net
 gssprt.jp
 gstatic.com
-gstaticadssl.l.google.com
 gtnetwork.com.au
 gtop.ro
 gtopstats.com
@@ -1967,12 +1948,8 @@ i-stats.com
 i.ad-v.jp
 i.instagram.com
 i.po.st
-i.t.net.ar
-i.t.webtracker.jp
 i.tapit.com
 i.ua
-i.w.inmobi.com
-i.w.sandbox.inmobi.com
 i18n.discord.com
 iac.com
 iacadvertising.com
@@ -2822,8 +2799,6 @@ p-td.com
 p.ads.roku.com
 p22.atemda.com
 paceaste.xyz
-pagead.l.doubleclick.net
-pagead.l.google.com
 pagead2.googleadservices.com
 pagead2.googlesyndication.co
 pagead2.googlesyndication.com
@@ -2841,7 +2816,6 @@ pardot.com
 parse.ly
 parsely.com
 partner.googleadservices.com
-partnerad.l.doubleclick.net
 partners.swoop.com
 partners.webmasterplan.com
 patch.com
@@ -3018,7 +2992,6 @@ ptb.discord.com
 ptb.discordapp.com
 pub.clicksor.net
 pub.mobiright.com
-pubads.g.doubleclick.net
 public-trace-http-intake.logs.datadoghq.com
 publicidees.com
 pubmatic.com
@@ -3053,7 +3026,6 @@ quisma.com
 quismatch.com
 quitzon.net
 r.edge.inmobicdn.net
-r.w.inmobi.com
 raasnet.com
 rad.live.com
 rad.msn.com
@@ -3235,7 +3207,6 @@ scs.samsungqbe.com
 sdfje.com
 sdk.hockeyapp.net
 sdk.iad-08.braze.com
-sdktm.w.inmobi.com
 sdt1.corp.inmobi.com
 searchforce.com
 searchforce.net
@@ -3249,7 +3220,6 @@ secure.leadback.advertising.com
 secure.make6pain.com
 secure.skypeassets.com
 secure.surveymonkey.com
-securepubads.g.doubleclick.net
 securesignupoffers.org
 sedotracker.com
 sedotracker.de
@@ -3322,7 +3292,6 @@ silverpop.com
 simility.com
 simpli.fi
 simply.com
-sin1.g.adnxs.com
 singlefeed.com
 sitecompass.com
 sitemeter.com
@@ -3430,7 +3399,6 @@ srv.clickfuse.com
 srv.juiceadv.com
 srvpub.com
 ssl.google-analytics.com
-ssl.p.jwpcdn.com
 sslverify.info
 st-widget.s3.amazonaws.com
 stackadapt.com
@@ -3461,7 +3429,6 @@ statisfy.net
 statistics.ro
 statistik-gallup.net
 stats.appsflyer.com
-stats.g.doubleclick.net
 stats.gc.apple.com
 stats.hbbtv.smartclip.net
 stats.wp.com
@@ -4079,7 +4046,6 @@ www.luck9game.com
 www.lugjdylyqc.xyz
 www.lusthero.com
 www.luvchaser.com
-www.m.bison.partners
 www.maxiporn.com
 www.medtecchina.com
 www.meetalignerrhq.com
@@ -4188,8 +4154,6 @@ wysistat.com
 wysistat.net
 x.castanet.net
 x.com
-x1.c.lencr.org
-x2.c.lencr.org
 x888x.myserver.org
 xa.net
 xad.com
@@ -4231,7 +4195,6 @@ ybrantdigital.com
 ybx.io
 yceml.net
 ydworld.com
-ye.c.lencr.org
 yellowhammermg.com
 yellowtracker.com
 yesads.com
@@ -4264,7 +4227,6 @@ youtube.com
 youtubei.googleapis.com
 yoyo.com
 yp.com
-yr.c.lencr.org
 ysance.com
 yt1187.net
 yuilibrary.com
