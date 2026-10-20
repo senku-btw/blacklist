@@ -260,6 +260,37 @@ def fetch_pihole_candidate_empty_adlists(db_path: str) -> Set[str]:
 
     return extracted_urls
 
+def fetch_pihole_candidate_unavailable_adlists(db_path: str) -> Set[str]:
+    """
+    Queries Pi-hole's gravity.db for adlists with status 4 (unavailable).
+    """
+    if not os.path.exists(db_path):
+        logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping candidate unavailable adlist extraction.")
+        return set()
+
+    extracted_urls: Set[str] = set()
+    try:
+        with sqlite3.connect(db_path, timeout=10.0) as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            
+            query = """
+                SELECT DISTINCT a.address
+                FROM adlist a
+                WHERE a.status = 4
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            for row in rows:
+                if row and row[0]:
+                    extracted_urls.add(row[0])
+                    
+    except sqlite3.Error as e:
+        logger.error(f"SQLite error while fetching candidate unavailable adlists from Pi-hole database: {e}")
+        raise BlacklistSyncError(f"Database candidate unavailable adlist read failed: {e}") from e
+
+    return extracted_urls
+
 def fetch_pihole_minor_adlists(db_path: str) -> Set[str]:
     """
     Queries Pi-hole's gravity.db for adlists with status 1, 2, or 3,
@@ -330,6 +361,34 @@ def verify_url_is_empty(url: str) -> bool:
         logger.warning(f"Unexpected error verifying URL '{url}': {e}")
         return False
 
+def verify_url_is_unavailable(url: str) -> bool:
+    """
+    Independently verifies via HTTP/HTTPS fetch whether a blocklist URL is unavailable/failing 
+    (e.g., HTTP error status >= 400, connection timeout, or URLError). Returns True if unavailable.
+    """
+    if not url or not isinstance(url, str):
+        return False
+
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "PiholeSync-Verifier/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10.0) as response:
+            if response.status >= 400:
+                logger.warning(f"URL '{url}' returned HTTP status {response.status}")
+                return True
+            return False
+    except urllib.error.HTTPError as e:
+        logger.warning(f"HTTP error verifying URL '{url}': {e.code} {e.reason}")
+        return True
+    except urllib.error.URLError as e:
+        logger.warning(f"Network error verifying URL '{url}': {e.reason}")
+        return True
+    except Exception as e:
+        logger.warning(f"Unexpected error verifying URL '{url}': {e}")
+        return True
+
 def purge_pihole_domains(domains: FrozenSet[str], db_path: str) -> None:
     """
     Atomically purges extracted domains from Pi-hole's gravity.db within a transaction boundary.
@@ -365,6 +424,42 @@ def purge_pihole_domains(domains: FrozenSet[str], db_path: str) -> None:
     except sqlite3.Error as e:
         logger.error(f"Transaction failed during database purge, rolling back: {e}")
         raise BlacklistSyncError(f"Database purge failed: {e}") from e
+
+def purge_pihole_adlists(urls: FrozenSet[str], db_path: str) -> None:
+    """
+    Atomically purges extracted unavailable adlists from Pi-hole's gravity.db within a transaction boundary.
+    """
+    if not urls or not os.path.exists(db_path):
+        return
+
+    url_list = list(urls)
+    try:
+        with sqlite3.connect(db_path, timeout=15.0) as conn:
+            cursor = conn.cursor()
+            conn.execute("BEGIN TRANSACTION;")
+            
+            batch_size = 500
+            total_purged = 0
+            
+            for i in range(0, len(url_list), batch_size):
+                chunk = url_list[i:i + batch_size]
+                placeholders = ",".join(["?"] * len(chunk))
+                
+                cursor.execute(f"SELECT id FROM adlist WHERE address IN ({placeholders})", tuple(chunk))
+                adlist_ids = [row[0] for row in cursor.fetchall()]
+
+                if adlist_ids:
+                    id_placeholders = ",".join(["?"] * len(adlist_ids))
+                    cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({id_placeholders})", tuple(adlist_ids))
+                    cursor.execute(f"DELETE FROM adlist WHERE id IN ({id_placeholders})", tuple(adlist_ids))
+                    total_purged += len(adlist_ids)
+
+            conn.commit()
+            logger.info(f"Successfully purged {total_purged} unavailable adlists from Pi-hole gravity database.")
+            
+    except sqlite3.Error as e:
+        logger.error(f"Transaction failed during adlist database purge, rolling back: {e}")
+        raise BlacklistSyncError(f"Database adlist purge failed: {e}") from e
 
 def parse_local_blacklist(file_path: str) -> Set[str]:
     """
@@ -518,6 +613,58 @@ def update_empty_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
                 pass
         logger.error(f"Failed to write empty-lists.txt atomically: {e}")
         raise BlacklistSyncError(f"Atomic empty-lists file write failed: {e}") from e
+
+def update_unavailable_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
+    """
+    Safely reads existing unavailable-lists.txt, merges new unique URLs avoiding duplicates,
+    and performs an atomic write to prevent data loss while correctly reporting overall totals.
+    """
+    dir_name = os.path.dirname(file_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    existing_urls: Set[str] = set()
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    u = line.strip()
+                    if u:
+                        existing_urls.add(u)
+        except OSError as e:
+            logger.error(f"Failed to read existing unavailable-lists.txt: {e}")
+            raise BlacklistSyncError(f"Failed to read unavailable-lists.txt: {e}") from e
+
+    added_count = 0
+    for url in new_urls:
+        sanitized = sanitize_url(url)
+        if sanitized and sanitized not in existing_urls:
+            existing_urls.add(sanitized)
+            added_count += 1
+
+    total_count = len(existing_urls)
+
+    if added_count == 0:
+        logger.info(f"No new unique unavailable blocklists to append. Total unique tracked: {total_count}.")
+        return
+
+    sorted_urls = sorted(existing_urls)
+    fd, temp_path = tempfile.mkstemp(dir=dir_name if dir_name else ".", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            content = "\n".join(sorted_urls)
+            if content:
+                f.write(content)
+        os.replace(temp_path, file_path)
+        logger.info(f"Successfully updated '{file_path}' with {added_count} new unavailable blocklist(s). Total unique tracked: {total_count}.")
+    except Exception as e:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        logger.error(f"Failed to write unavailable-lists.txt atomically: {e}")
+        raise BlacklistSyncError(f"Atomic unavailable-lists file write failed: {e}") from e
 
 def update_minor_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
     """
@@ -741,6 +888,7 @@ def main() -> None:
     regex_deny_path = os.path.join(current_dir, "regex", "regex_deny.txt")
     blocklists_path = os.path.join(current_dir, "blocklists.txt")
     empty_lists_path = os.path.join(current_dir, "empty-lists.txt")
+    unavailable_lists_path = os.path.join(current_dir, "unavailable-lists.txt")
     minor_lists_path = os.path.join(current_dir, "minor-lists.txt")
     
     logger.info("Initializing Pi-hole blacklist synchronization pipeline...")
@@ -794,6 +942,23 @@ def main() -> None:
                 logger.info(f"Confirmed empty blocklist: '{sanitized_u}'")
 
         update_empty_lists_file(empty_lists_path, confirmed_empty_urls)
+
+        # Phase 4.5: Independent Verification and Tracking of Status 4 Unavailable Blocklists
+        logger.info("Initializing Phase 4.5: Unavailable blocklists independent verification and tracking...")
+        candidate_unavailable_raw = fetch_pihole_candidate_unavailable_adlists(DB_PATH)
+        logger.info(f"Found {len(candidate_unavailable_raw)} candidate unavailable adlists with status 4 in gravity.db. Verifying via direct fetch...")
+
+        confirmed_unavailable_urls: Set[str] = set()
+        for url in candidate_unavailable_raw:
+            sanitized_u = sanitize_url(url)
+            if sanitized_u and verify_url_is_unavailable(sanitized_u):
+                confirmed_unavailable_urls.add(sanitized_u)
+                logger.info(f"Confirmed unavailable blocklist: '{sanitized_u}'")
+
+        update_unavailable_lists_file(unavailable_lists_path, confirmed_unavailable_urls)
+
+        if confirmed_unavailable_urls:
+            purge_pihole_adlists(sanitize_url_batch(confirmed_unavailable_urls), DB_PATH)
 
         # Phase 5: Minor Blocklists Export (< 15,000 entries, no comment, status 1, 2, or 3)
         logger.info("Initializing Phase 5: Minor blocklists extraction and tracking...")
