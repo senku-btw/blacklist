@@ -830,6 +830,62 @@ def filter_minor_lists_against_empty_lists(empty_lists_path: str, minor_lists_pa
     else:
         logger.info("No overlapping URLs found between empty-lists.txt and minor-lists.txt.")
 
+def filter_minor_lists_against_unavailable_lists(unavailable_lists_path: str, minor_lists_path: str) -> None:
+    """
+    Compares unavailable-lists.txt and minor-lists.txt, removing any matching entries 
+    found in unavailable-lists.txt from minor-lists.txt atomically.
+    """
+    if not os.path.exists(unavailable_lists_path) or not os.path.exists(minor_lists_path):
+        return
+
+    unavailable_lists: Set[str] = set()
+    try:
+        with open(unavailable_lists_path, "r", encoding="utf-8") as f:
+            for line in f:
+                u = line.strip()
+                if u:
+                    unavailable_lists.add(u)
+    except OSError as e:
+        logger.error(f"Failed to read unavailable-lists.txt for filtering: {e}")
+        raise BlacklistSyncError(f"Failed to read unavailable-lists.txt: {e}") from e
+
+    minor_urls: Set[str] = set()
+    try:
+        with open(minor_lists_path, "r", encoding="utf-8") as f:
+            for line in f:
+                u = line.strip()
+                if u:
+                    minor_urls.add(u)
+    except OSError as e:
+        logger.error(f"Failed to read minor-lists.txt for filtering: {e}")
+        raise BlacklistSyncError(f"Failed to read minor-lists.txt: {e}") from e
+
+    initial_count = len(minor_urls)
+    filtered_urls = minor_urls - unavailable_lists
+    removed_count = initial_count - len(filtered_urls)
+
+    if removed_count > 0:
+        dir_name = os.path.dirname(minor_lists_path)
+        sorted_urls = sorted(filtered_urls)
+        fd, temp_path = tempfile.mkstemp(dir=dir_name if dir_name else ".", text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                content = "\n".join(sorted_urls)
+                if content:
+                    f.write(content)
+            os.replace(temp_path, minor_lists_path)
+            logger.info(f"Successfully filtered out {removed_count} overlapping URL(s) from '{minor_lists_path}' matching unavailable-lists.txt.")
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            logger.error(f"Failed to write filtered minor-lists.txt atomically: {e}")
+            raise BlacklistSyncError(f"Atomic filtered minor-lists file write failed: {e}") from e
+    else:
+        logger.info("No overlapping URLs found between unavailable-lists.txt and minor-lists.txt.")
+
 def git_commit_and_push_changes(repo_dir: str) -> None:
     """
     Checks for local changes in the repository. If changes exist, stages them,
@@ -974,6 +1030,10 @@ def main() -> None:
         # Phase 7: Filter Minor Blocklists Against Empty Blocklists
         logger.info("Initializing Phase 7: Filtering minor-lists against empty-lists...")
         filter_minor_lists_against_empty_lists(empty_lists_path, minor_lists_path)
+
+        # Phase 7.5: Filter Minor Blocklists Against Unavailable Blocklists
+        logger.info("Initializing Phase 7.5: Filtering minor-lists against unavailable-lists...")
+        filter_minor_lists_against_unavailable_lists(unavailable_lists_path, minor_lists_path)
 
         # Phase 8: Git Commit and Push Automation
         logger.info("Initializing Phase 8: Checking and pushing updates to GitHub...")
