@@ -433,7 +433,7 @@ def atomic_write_blocklists(file_path: str, url_tuple: Tuple[str, ...]) -> None:
 def update_empty_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
     """
     Safely reads existing empty-lists.txt, merges new unique URLs avoiding duplicates,
-    and performs an atomic write to prevent data loss.
+    and performs an atomic write to prevent data loss while correctly reporting overall totals.
     """
     dir_name = os.path.dirname(file_path)
     if dir_name:
@@ -458,12 +458,13 @@ def update_empty_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
             existing_urls.add(sanitized)
             added_count += 1
 
-    if added_count == 0 and os.path.exists(file_path):
-        logger.info("No new unique empty blocklists to append.")
+    total_count = len(existing_urls)
+
+    if added_count == 0:
+        logger.info(f"No new unique empty blocklists to append. Total unique tracked: {total_count}.")
         return
 
     sorted_urls = sorted(existing_urls)
-
     fd, temp_path = tempfile.mkstemp(dir=dir_name if dir_name else ".", text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -471,7 +472,7 @@ def update_empty_lists_file(file_path: str, new_urls: Iterable[str]) -> None:
             if content:
                 f.write(content)
         os.replace(temp_path, file_path)
-        logger.info(f"Successfully updated '{file_path}' with {added_count} new empty blocklist(s). Total unique tracked: {len(sorted_urls)}.")
+        logger.info(f"Successfully updated '{file_path}' with {added_count} new empty blocklist(s). Total unique tracked: {total_count}.")
     except Exception as e:
         if os.path.exists(temp_path):
             try:
