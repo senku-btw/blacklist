@@ -87,6 +87,7 @@ https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.vivo.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.winoffice.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.xiaomi.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/social.txt
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/urlshortener.txt
 https://dehakkelaar.nl/lists/cryptojacking_campaign.list.txt
 https://easylist-downloads.adblockplus.org/adblock_premium.txt
 https://gist.githubusercontent.com/BBcan177/2a9fc2548c3c5a5e2dc86e580b5795d2/raw/2f5c90ffb3bd02199ace1b16a0bd9f53b29f0879/EasyList_DE
@@ -311,6 +312,7 @@ https://raw.githubusercontent.com/pirat28/IHateTracker/master/iHateTracker.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardApps.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardMobileAds.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardMobileSpyware.txt
+https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt
 https://raw.githubusercontent.com/some-username-here1/motd-adblock/master/motd-adblock
 https://raw.githubusercontent.com/sophoslabs/covid-iocs/master/malicious_domains.txt
 https://raw.githubusercontent.com/sophoslabs/covid-iocs/master/malware_domains.txt
@@ -349,5 +351,3 @@ https://winhelp2002.mvps.org/hosts.txt
 https://wp.owenthe.dev/redshell.txt
 https://www.botvrij.eu/data/ioclist.hostname.raw
 https://www.thedumbterminal.co.uk/files/services/squidblockedsites/blocked.txt
-https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt
-https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/urlshortener.txt

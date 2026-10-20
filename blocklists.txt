@@ -56,7 +56,6 @@ https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/popupads.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/pro.plus.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.txt
 https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/ultimate.txt
-https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/urlshortener.txt
 https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/dga14.txt
 https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/dga30.txt
 https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/adblock/dga7.txt
@@ -159,7 +158,6 @@ https://raw.githubusercontent.com/ph00lt0/blocklists/master/pihole-blocklist.txt
 https://raw.githubusercontent.com/phishdestroy/destroylist/main/list.txt
 https://raw.githubusercontent.com/phishdestroy/destroylist/main/rootlist/formats/primary/hosts.txt
 https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist-extra.txt
-https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt
 https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/whitelist.txt
 https://raw.githubusercontent.com/smed79/blacklist/master/hosts.txt
 https://raw.githubusercontent.com/stamparm/blackbook/master/blackbook.txt
