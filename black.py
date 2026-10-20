@@ -294,7 +294,7 @@ def fetch_pihole_candidate_unavailable_adlists(db_path: str) -> Set[str]:
 def fetch_pihole_minor_adlists(db_path: str) -> Set[str]:
     """
     Queries Pi-hole's gravity.db for adlists with status 1, 2, or 3,
-    having no comment, and having strictly fewer than 15,000 domain entries (non-empty).
+    and having strictly fewer than 15,000 domain entries (non-empty).
     """
     if not os.path.exists(db_path):
         logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping minor adlist extraction.")
@@ -310,7 +310,6 @@ def fetch_pihole_minor_adlists(db_path: str) -> Set[str]:
                 SELECT DISTINCT a.address
                 FROM adlist a
                 WHERE a.status IN (1, 2, 3)
-                  AND (a.comment IS NULL OR TRIM(a.comment) = '')
                   AND a.number IS NOT NULL
                   AND a.number > 0
                   AND a.number < 15000
@@ -330,7 +329,7 @@ def fetch_pihole_minor_adlists(db_path: str) -> Set[str]:
 def fetch_pihole_major_adlists(db_path: str) -> Set[str]:
     """
     Queries Pi-hole's gravity.db for adlists with status 1, 2, or 3,
-    having no comment, and having over 15,000 domain entries.
+    and having over or equal to 15,000 domain entries.
     """
     if not os.path.exists(db_path):
         logger.warning(f"Pi-hole database not found at '{db_path}'. Skipping major adlist extraction.")
@@ -346,7 +345,6 @@ def fetch_pihole_major_adlists(db_path: str) -> Set[str]:
                 SELECT DISTINCT a.address
                 FROM adlist a
                 WHERE a.status IN (1, 2, 3)
-                  AND (a.comment IS NULL OR TRIM(a.comment) = '')
                   AND a.number IS NOT NULL
                   AND a.number >= 15000
             """
@@ -485,7 +483,7 @@ def purge_pihole_adlists(urls: FrozenSet[str], db_path: str) -> None:
 
                 if adlist_ids:
                     id_placeholders = ",".join(["?"] * len(adlist_ids))
-                    cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({id_placeholders})", tuple(id_placeholders)) # fixed variable name alignment
+                    cursor.execute(f"DELETE FROM adlist_by_group WHERE adlist_id IN ({id_placeholders})", tuple(adlist_ids))
                     cursor.execute(f"DELETE FROM adlist WHERE id IN ({id_placeholders})", tuple(adlist_ids))
                     total_purged += len(adlist_ids)
 
@@ -1104,14 +1102,14 @@ def main() -> None:
         if confirmed_unavailable_urls:
             purge_pihole_adlists(sanitize_url_batch(confirmed_unavailable_urls), DB_PATH)
 
-        # Phase 5: Minor Blocklists Export (< 15,000 entries, no comment, status 1, 2, or 3)
+        # Phase 5: Minor Blocklists Export (< 15,000 entries, status 1, 2, or 3)
         logger.info("Initializing Phase 5: Minor blocklists extraction and tracking...")
         minor_raw = fetch_pihole_minor_adlists(DB_PATH)
         minor_frozen: FrozenSet[str] = sanitize_url_batch(minor_raw)
         logger.info(f"Sanitized and validated {len(minor_frozen)} unique minor blocklist URLs from gravity.db.")
         update_minor_lists_file(minor_lists_path, minor_frozen)
 
-        # Phase 5.5: Major Blocklists Export (>= 15,000 entries, no comment, status 1, 2, or 3)
+        # Phase 5.5: Major Blocklists Export (>= 15,000 entries, status 1, 2, or 3)
         logger.info("Initializing Phase 5.5: Major blocklists extraction and tracking...")
         major_raw = fetch_pihole_major_adlists(DB_PATH)
         major_frozen: FrozenSet[str] = sanitize_url_batch(major_raw)
