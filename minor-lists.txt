@@ -313,6 +313,7 @@ https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardApps.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardMobileAds.txt
 https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardMobileSpyware.txt
 https://raw.githubusercontent.com/senku-btw/blacklist/refs/heads/main/blacklists/blacklist.txt
+https://raw.githubusercontent.com/senku-btw/whitelist/refs/heads/main/healthcheck.txt
 https://raw.githubusercontent.com/some-username-here1/motd-adblock/master/motd-adblock
 https://raw.githubusercontent.com/sophoslabs/covid-iocs/master/malicious_domains.txt
 https://raw.githubusercontent.com/sophoslabs/covid-iocs/master/malware_domains.txt
